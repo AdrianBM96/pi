@@ -335,6 +335,11 @@ export interface ExtensionContext {
 	getContextUsage(): ContextUsage | undefined;
 	/** Trigger compaction without awaiting completion. */
 	compact(options?: CompactOptions): void;
+	/**
+	 * Request a runtime reload. Resolves after the request is accepted; reload may
+	 * run later when the session reaches a safe boundary.
+	 */
+	reload(): Promise<void>;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
 }
@@ -1618,6 +1623,7 @@ export interface ExtensionContextActions {
 	shutdown: () => void;
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (options?: CompactOptions) => void;
+	reload?: () => Promise<void>;
 	getSystemPrompt: () => string;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
 }
@@ -1645,7 +1651,7 @@ export interface ExtensionCommandContextActions {
 		sessionPath: string,
 		options?: { withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
 	) => Promise<{ cancelled: boolean }>;
-	reload: () => Promise<void>;
+	reload?: () => Promise<void>;
 }
 
 /**
