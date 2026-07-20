@@ -2,11 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `contentText` for extracting joined text from message content.
+- Added a shared `uuidv7` utility for time-ordered identifiers.
+
 ### Fixed
 
+- Fixed sessionless OpenAI Codex WebSocket requests to use UUIDv7 request IDs, enabling models that reject UUIDv4 IDs.
 - Fixed GitHub Copilot long-context pricing tiers in generated model metadata ([#6668](https://github.com/earendil-works/pi/issues/6668)).
 - Fixed Kimi Coding subscription models to report API-equivalent implied costs when models.dev reports zero pricing.
 - Fixed OpenAI Responses early stream endings to be classified as retryable provider errors ([#6727](https://github.com/earendil-works/pi/issues/6727)).
+- Fixed GPT-5.6 Codex models to default to the 272K context window, avoiding automatic long-context pricing ([#6838](https://github.com/earendil-works/pi/issues/6838)).
 
 ## [0.80.10] - 2026-07-16
 
