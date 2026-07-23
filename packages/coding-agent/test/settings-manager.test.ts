@@ -420,6 +420,29 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("limitedRepaint", () => {
+		it("defaults to unlimited and persists a positive row limit", async () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getLimitedRepaint()).toBeUndefined();
+
+			manager.setLimitedRepaint(500.9);
+			await manager.flush();
+
+			expect(manager.getLimitedRepaint()).toBe(500);
+			const savedSettings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+			expect(savedSettings.terminal.limitedRepaint).toBe(500);
+		});
+
+		it("treats invalid row limits as unlimited", () => {
+			expect(SettingsManager.inMemory({ terminal: { limitedRepaint: 0 } }).getLimitedRepaint()).toBeUndefined();
+			expect(SettingsManager.inMemory({ terminal: { limitedRepaint: -10 } }).getLimitedRepaint()).toBeUndefined();
+			expect(
+				SettingsManager.inMemory({ terminal: { limitedRepaint: Number.POSITIVE_INFINITY } }).getLimitedRepaint(),
+			).toBeUndefined();
+		});
+	});
+
 	describe("shellCommandPrefix", () => {
 		it("should load shellCommandPrefix from settings", () => {
 			const settingsPath = join(agentDir, "settings.json");

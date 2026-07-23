@@ -78,6 +78,7 @@ export interface SettingsConfig {
 	quietStartup: boolean;
 	defaultProjectTrust: DefaultProjectTrust;
 	clearOnShrink: boolean;
+	limitedRepaint: number | undefined;
 	showTerminalProgress: boolean;
 	warnings: WarningSettings;
 }
@@ -109,6 +110,7 @@ export interface SettingsCallbacks {
 	onQuietStartupChange: (enabled: boolean) => void;
 	onDefaultProjectTrustChange: (defaultProjectTrust: DefaultProjectTrust) => void;
 	onClearOnShrinkChange: (enabled: boolean) => void;
+	onLimitedRepaintChange: (maxLines: number | undefined) => void;
 	onShowTerminalProgressChange: (enabled: boolean) => void;
 	onWarningsChange: (warnings: WarningSettings) => void;
 	onCancel: () => void;
@@ -718,9 +720,19 @@ export class SettingsSelectorComponent extends Container {
 			values: ["true", "false"],
 		});
 
-		// Terminal progress toggle (insert after clear-on-shrink)
+		// Limited repaint setting (insert after clear-on-shrink)
 		const clearOnShrinkIndex = items.findIndex((item) => item.id === "clear-on-shrink");
 		items.splice(clearOnShrinkIndex + 1, 0, {
+			id: "limited-repaint",
+			label: "Limited repaint",
+			description: "Limit full repaints to recent rows; incremental scrollback remains unbounded",
+			currentValue: config.limitedRepaint === undefined ? "off" : String(config.limitedRepaint),
+			values: ["off", "100", "500", "1000", "5000"],
+		});
+
+		// Terminal progress toggle (insert after limited-repaint)
+		const limitedRepaintIndex = items.findIndex((item) => item.id === "limited-repaint");
+		items.splice(limitedRepaintIndex + 1, 0, {
 			id: "terminal-progress",
 			label: "Terminal progress",
 			description: "Show OSC 9;4 progress indicators in the terminal tab bar",
@@ -815,6 +827,9 @@ export class SettingsSelectorComponent extends Container {
 						break;
 					case "clear-on-shrink":
 						callbacks.onClearOnShrinkChange(newValue === "true");
+						break;
+					case "limited-repaint":
+						callbacks.onLimitedRepaintChange(newValue === "off" ? undefined : parseInt(newValue, 10));
 						break;
 					case "terminal-progress":
 						callbacks.onShowTerminalProgressChange(newValue === "true");

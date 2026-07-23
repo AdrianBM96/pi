@@ -311,6 +311,8 @@ export class TUI extends Container {
 	private hardwareCursorRow = 0; // Actual terminal cursor row (may differ due to IME positioning)
 	private showHardwareCursor = process.env.PI_HARDWARE_CURSOR === "1";
 	private clearOnShrink = process.env.PI_CLEAR_ON_SHRINK === "1"; // Clear empty rows when content shrinks (default: off)
+	private limitedRepaint: number | undefined;
+	private renderedBufferStart = 0; // First logical line retained after the last full repaint
 	private maxLinesRendered = 0; // Track terminal's working area (max lines ever rendered)
 	private previousViewportTop = 0; // Track previous viewport top for resize-aware cursor moves
 	private fullRedrawCount = 0;
@@ -363,6 +365,19 @@ export class TUI extends Container {
 	 */
 	setClearOnShrink(enabled: boolean): void {
 		this.clearOnShrink = enabled;
+	}
+
+	getLimitedRepaint(): number | undefined {
+		return this.limitedRepaint;
+	}
+
+	/**
+	 * Limit full repaints to the most recent number of rendered rows.
+	 * The visible viewport is always repainted in full, and differential appends remain unbounded.
+	 */
+	setLimitedRepaint(maxLines: number | undefined): void {
+		this.limitedRepaint =
+			maxLines === undefined || !Number.isFinite(maxLines) || maxLines <= 0 ? undefined : Math.floor(maxLines);
 	}
 
 	setFocus(component: Component | null): void {
@@ -1139,6 +1154,21 @@ export class TUI extends Container {
 		return reservedRows;
 	}
 
+	private getLimitedRepaintStart(lines: string[], height: number): number {
+		if (this.limitedRepaint === undefined) return 0;
+
+		let start = Math.max(0, lines.length - Math.max(height, this.limitedRepaint));
+		for (let i = 0; i < start; i++) {
+			if (!isImageLine(lines[i] ?? "") || extractKittyImageRows(lines[i] ?? "") <= 1) continue;
+			const blockEnd = i + this.getKittyImageReservedRows(lines, i) - 1;
+			if (blockEnd >= start) {
+				start = i;
+				break;
+			}
+		}
+		return start;
+	}
+
 	private expandChangedRangeForKittyImages(
 		firstChanged: number,
 		lastChanged: number,
@@ -1287,13 +1317,14 @@ export class TUI extends Container {
 		// Helper to clear scrollback and viewport and render all new lines
 		const fullRender = (clear: boolean): void => {
 			this.fullRedrawCount += 1;
+			const renderStart = clear ? this.getLimitedRepaintStart(newLines, height) : 0;
 			let buffer = "\x1b[?2026h"; // Begin synchronized output
 			if (clear) {
 				buffer += this.deleteKittyImages(this.previousKittyImageIds);
 				buffer += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, then clear scrollback
 			}
-			for (let i = 0; i < newLines.length; i++) {
-				if (i > 0) buffer += "\r\n";
+			for (let i = renderStart; i < newLines.length; i++) {
+				if (i > renderStart) buffer += "\r\n";
 				const line = newLines[i];
 				const isImage = isImageLine(line);
 				const imageReservedRows = isImage ? this.getKittyImageReservedRows(newLines, i) : 1;
@@ -1323,7 +1354,8 @@ export class TUI extends Container {
 			this.previousViewportTop = Math.max(0, bufferLength - height);
 			this.positionHardwareCursor(cursorPos, newLines.length);
 			this.previousLines = newLines;
-			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+			this.previousKittyImageIds = this.collectKittyImageIds(newLines.slice(renderStart));
+			this.renderedBufferStart = renderStart;
 			this.previousWidth = width;
 			this.previousHeight = height;
 		};
@@ -1353,8 +1385,16 @@ export class TUI extends Container {
 
 		// Height changes normally need a full re-render to keep the visible viewport aligned,
 		// but Termux changes height when the software keyboard shows or hides.
-		// In that environment, a full redraw causes the entire history to replay on every toggle.
-		if (heightChanged && !isTermuxSession()) {
+		// In that environment, only repaint if a larger viewport would expose history omitted
+		// by a previous limited repaint.
+		const retainedBufferLines = this.previousLines.length - this.renderedBufferStart;
+		const termuxNeedsRepaint =
+			isTermuxSession() &&
+			heightChanged &&
+			height > this.previousHeight &&
+			this.renderedBufferStart > 0 &&
+			height > retainedBufferLines;
+		if (heightChanged && (!isTermuxSession() || termuxNeedsRepaint)) {
 			logRedraw(`terminal height changed (${this.previousHeight} -> ${height})`);
 			fullRender(true);
 			return;
@@ -1448,7 +1488,7 @@ export class TUI extends Container {
 			}
 			this.positionHardwareCursor(cursorPos, newLines.length);
 			this.previousLines = newLines;
-			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+			this.previousKittyImageIds = this.collectKittyImageIds(newLines.slice(this.renderedBufferStart));
 			this.previousWidth = width;
 			this.previousHeight = height;
 			this.previousViewportTop = prevViewportTop;
@@ -1619,7 +1659,7 @@ export class TUI extends Container {
 		this.positionHardwareCursor(cursorPos, newLines.length);
 
 		this.previousLines = newLines;
-		this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+		this.previousKittyImageIds = this.collectKittyImageIds(newLines.slice(this.renderedBufferStart));
 		this.previousWidth = width;
 		this.previousHeight = height;
 	}

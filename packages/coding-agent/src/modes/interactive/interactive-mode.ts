@@ -453,6 +453,7 @@ export class InteractiveMode {
 		this.version = VERSION;
 		this.ui = new TUI(new ProcessTerminal(), this.settingsManager.getShowHardwareCursor(), getAgentDir());
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
+		this.ui.setLimitedRepaint(this.settingsManager.getLimitedRepaint());
 		this.headerContainer = new Container();
 		this.loadedResourcesContainer = new Container();
 		this.chatContainer = new Container();
@@ -1711,6 +1712,7 @@ export class InteractiveMode {
 		this.ui.setShowHardwareCursor(this.settingsManager.getShowHardwareCursor());
 		const clearOnShrink = this.settingsManager.getClearOnShrink();
 		this.ui.setClearOnShrink(clearOnShrink);
+		this.ui.setLimitedRepaint(this.settingsManager.getLimitedRepaint());
 		if (!clearOnShrink && !this.activeStatusIndicator) {
 			this.statusContainer.clear();
 		}
@@ -4140,6 +4142,7 @@ export class InteractiveMode {
 					autocompleteMaxVisible: this.settingsManager.getAutocompleteMaxVisible(),
 					quietStartup: this.settingsManager.getQuietStartup(),
 					clearOnShrink: this.settingsManager.getClearOnShrink(),
+					limitedRepaint: this.settingsManager.getLimitedRepaint(),
 					showTerminalProgress: this.settingsManager.getShowTerminalProgress(),
 					warnings: this.settingsManager.getWarnings(),
 				},
@@ -4273,6 +4276,10 @@ export class InteractiveMode {
 						if (!enabled && !this.activeStatusIndicator) {
 							this.statusContainer.clear();
 						}
+					},
+					onLimitedRepaintChange: (maxLines) => {
+						this.settingsManager.setLimitedRepaint(maxLines);
+						this.ui.setLimitedRepaint(maxLines);
 					},
 					onShowTerminalProgressChange: (enabled) => {
 						this.settingsManager.setShowTerminalProgress(enabled);
@@ -5348,6 +5355,7 @@ export class InteractiveMode {
 			this.ui.setShowHardwareCursor(this.settingsManager.getShowHardwareCursor());
 			const clearOnShrink = this.settingsManager.getClearOnShrink();
 			this.ui.setClearOnShrink(clearOnShrink);
+			this.ui.setLimitedRepaint(this.settingsManager.getLimitedRepaint());
 			if (!clearOnShrink && !this.activeStatusIndicator) {
 				this.statusContainer.clear();
 			}

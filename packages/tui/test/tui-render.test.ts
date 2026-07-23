@@ -426,6 +426,115 @@ describe("TUI resize handling", () => {
 	});
 });
 
+describe("TUI limited repaint", () => {
+	it("limits full repaint output while leaving later appends unbounded", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 5);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		component.lines = Array.from({ length: 20 }, (_, i) => `row-${String(i).padStart(3, "0")}|`);
+		tui.start();
+		await terminal.waitForRender();
+
+		tui.setLimitedRepaint(7);
+		terminal.clearWrites();
+		tui.requestRender(true);
+		await terminal.waitForRender();
+
+		const repaintWrites = terminal.getWrites();
+		assert.ok(repaintWrites.includes("\x1b[2J\x1b[H\x1b[3J"), "limited repaint should still clear scrollback");
+		assert.ok(!repaintWrites.includes("row-012|"), "rows before the repaint limit should not be emitted");
+		assert.ok(repaintWrites.includes("row-013|"), "the configured repaint tail should be emitted");
+		assert.ok(repaintWrites.includes("row-019|"), "the latest row should be emitted");
+
+		const redrawsBeforeHiddenChange = tui.fullRedraws;
+		terminal.clearWrites();
+		component.lines[0] = "changed-row-000|";
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		const hiddenChangeWrites = terminal.getWrites();
+		assert.ok(tui.fullRedraws > redrawsBeforeHiddenChange, "a hidden change should trigger a full repaint");
+		assert.ok(!hiddenChangeWrites.includes("changed-row-000|"), "limited repaint should still omit old changed rows");
+		assert.ok(hiddenChangeWrites.includes("row-013|"), "limited repaint should reconstruct the retained tail");
+
+		const redrawsAfterRepaint = tui.fullRedraws;
+		terminal.clearWrites();
+		component.lines.push("row-020|");
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		const appendWrites = terminal.getWrites();
+		assert.strictEqual(tui.fullRedraws, redrawsAfterRepaint, "append should stay on the differential path");
+		assert.ok(!appendWrites.includes("\x1b[2J"), "append should not clear the terminal");
+		assert.ok(appendWrites.includes("row-020|"), "append should emit the new row");
+		assert.deepStrictEqual(terminal.getViewport(), ["row-016|", "row-017|", "row-018|", "row-019|", "row-020|"]);
+
+		tui.stop();
+	});
+
+	it("repaints omitted rows when a Termux viewport grows beyond the retained buffer", async () => {
+		await withEnv({ TERMUX_VERSION: "1" }, async () => {
+			const terminal = new LoggingVirtualTerminal(40, 5);
+			const tui = new TUI(terminal);
+			const component = new TestComponent();
+			tui.addChild(component);
+
+			component.lines = Array.from({ length: 20 }, (_, i) => `row-${String(i).padStart(3, "0")}|`);
+			tui.start();
+			await terminal.waitForRender();
+
+			tui.setLimitedRepaint(5);
+			tui.requestRender(true);
+			await terminal.waitForRender();
+			const redrawsBeforeResize = tui.fullRedraws;
+			terminal.clearWrites();
+
+			terminal.resize(40, 8);
+			await terminal.waitForRender();
+
+			assert.ok(tui.fullRedraws > redrawsBeforeResize, "larger viewport should trigger a limited repaint");
+			assert.ok(terminal.getWrites().includes("row-012|"), "newly visible rows should be reconstructed");
+			assert.deepStrictEqual(terminal.getViewport(), [
+				"row-012|",
+				"row-013|",
+				"row-014|",
+				"row-015|",
+				"row-016|",
+				"row-017|",
+				"row-018|",
+				"row-019|",
+			]);
+
+			tui.stop();
+		});
+	});
+
+	it("always repaints at least the visible viewport", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 5);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		component.lines = Array.from({ length: 20 }, (_, i) => `row-${String(i).padStart(3, "0")}|`);
+		tui.start();
+		await terminal.waitForRender();
+
+		tui.setLimitedRepaint(2);
+		terminal.clearWrites();
+		tui.requestRender(true);
+		await terminal.waitForRender();
+
+		const writes = terminal.getWrites();
+		assert.ok(!writes.includes("row-014|"), "rows above the viewport should not be emitted");
+		assert.ok(writes.includes("row-015|"), "the complete viewport should be emitted");
+		assert.deepStrictEqual(terminal.getViewport(), ["row-015|", "row-016|", "row-017|", "row-018|", "row-019|"]);
+
+		tui.stop();
+	});
+});
+
 describe("TUI content shrinkage", () => {
 	it("clears empty rows when content shrinks significantly", async () => {
 		const terminal = new VirtualTerminal(40, 10);
