@@ -2380,10 +2380,10 @@ export class InteractiveMode {
 	private setCustomEditorComponent(factory: EditorFactory | undefined): void {
 		this.editorComponentFactory = factory;
 
-		// Save text from current editor before switching
-		const currentText = this.editor.getText();
-
-		this.editorContainer.clear();
+		const previousEditor = this.editor;
+		const editorIsDisplayed =
+			this.editorContainer.children.length === 1 && this.editorContainer.children[0] === previousEditor;
+		const currentText = previousEditor.getText();
 
 		if (factory) {
 			// Create the custom editor with tui, theme, and keybindings
@@ -2438,8 +2438,11 @@ export class InteractiveMode {
 			this.editor = this.defaultEditor;
 		}
 
-		this.editorContainer.addChild(this.editor as Component);
-		this.ui.setFocus(this.editor as Component);
+		if (editorIsDisplayed) {
+			this.editorContainer.clear();
+			this.editorContainer.addChild(this.editor as Component);
+			this.ui.setFocus(this.editor as Component);
+		}
 		this.ui.requestRender();
 	}
 
