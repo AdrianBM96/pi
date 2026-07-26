@@ -75,12 +75,7 @@ import type {
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
-import {
-	appendSessionLoadout,
-	getSessionLoadout,
-	type LoadoutOverride,
-	loadoutOverridesEqual,
-} from "../../core/loadout.ts";
+import { appendSessionLoadout, getSessionLoadout, loadoutOverridesEqual } from "../../core/loadout.ts";
 import { createCompactionSummaryMessage } from "../../core/messages.ts";
 import {
 	defaultModelPerProvider,
@@ -132,7 +127,10 @@ import {
 	OAuthSelectorComponent,
 } from "./components/oauth-selector.ts";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
-import { SessionLoadoutSelectorComponent } from "./components/session-loadout-selector.ts";
+import {
+	type SessionLoadoutSelection,
+	SessionLoadoutSelectorComponent,
+} from "./components/session-loadout-selector.ts";
 import { SessionSelectorComponent } from "./components/session-selector.ts";
 import { SettingsSelectorComponent } from "./components/settings-selector.ts";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.ts";
@@ -4179,7 +4177,7 @@ export class InteractiveMode {
 		}
 	}
 
-	private async applySessionLoadout(overrides: LoadoutOverride[], persist: boolean): Promise<void> {
+	private async applySessionLoadout(selection: SessionLoadoutSelection, persist: boolean): Promise<void> {
 		if (this.loadoutActionBlocked("applying")) return;
 		const loader = this.getLoadoutLoader();
 		if (!loader) {
@@ -4187,13 +4185,13 @@ export class InteractiveMode {
 			return;
 		}
 		const previousOverrides = loader.getLoadoutSnapshot().overrides;
-		loader.setLoadoutOverrides(overrides);
+		loader.setLoadoutOverrides(selection.overrides);
 		if (!(await this.handleReloadCommand())) {
 			loader.setLoadoutOverrides(previousOverrides);
 			return;
 		}
-		if (persist && !loadoutOverridesEqual(previousOverrides, overrides)) {
-			appendSessionLoadout(this.sessionManager, overrides);
+		if (persist && (selection.explicitReset || !loadoutOverridesEqual(previousOverrides, selection.overrides))) {
+			appendSessionLoadout(this.sessionManager, selection.overrides);
 		}
 		this.showLoadoutDiagnostics();
 	}
@@ -4210,10 +4208,10 @@ export class InteractiveMode {
 				snapshot: loader.getLoadoutSnapshot(),
 				agentDir: this.runtimeHost.services.agentDir,
 				terminalHeight: this.ui.terminal.rows,
-				onApply: (overrides) => {
+				onApply: (selection) => {
 					if (this.loadoutActionBlocked("applying")) return;
 					done();
-					void this.applySessionLoadout(overrides, true);
+					void this.applySessionLoadout(selection, true);
 				},
 				onCancel: () => {
 					done();
@@ -4241,7 +4239,7 @@ export class InteractiveMode {
 			"Continue with the last session's extensions, skills, prompts, and themes? Missing resources will be skipped.",
 		);
 		if (!accepted) return;
-		await this.applySessionLoadout(saved.overrides, false);
+		await this.applySessionLoadout({ overrides: saved.overrides, explicitReset: false }, false);
 	}
 
 	private showSettingsSelector(): void {

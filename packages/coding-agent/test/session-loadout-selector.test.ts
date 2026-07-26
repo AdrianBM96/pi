@@ -76,10 +76,13 @@ describe("SessionLoadoutSelectorComponent", () => {
 		list.handleInput!("\n");
 
 		expect(onApply).toHaveBeenCalledOnce();
-		expect(onApply.mock.calls[0]?.[0]).toEqual([
-			{ reference: missingPromptReference, enabled: true },
-			{ reference: extensionReference, enabled: false },
-		]);
+		expect(onApply.mock.calls[0]?.[0]).toEqual({
+			overrides: [
+				{ reference: missingPromptReference, enabled: true },
+				{ reference: extensionReference, enabled: false },
+			],
+			explicitReset: false,
+		});
 	});
 
 	it("discards with Escape and emits no staged changes", () => {
@@ -119,7 +122,7 @@ describe("SessionLoadoutSelectorComponent", () => {
 		list.handleInput!(" ");
 		list.handleInput!("\n");
 
-		expect(onApply).toHaveBeenCalledWith([]);
+		expect(onApply).toHaveBeenCalledWith({ overrides: [], explicitReset: true });
 		expect(stripAnsi(selector.render(100).join("\n"))).toContain("[x] Use persistent settings");
 	});
 
@@ -142,7 +145,27 @@ describe("SessionLoadoutSelectorComponent", () => {
 		list.handleInput!(" ");
 		list.handleInput!("\n");
 
-		expect(onApply).toHaveBeenCalledWith([{ reference: extensionReference, enabled: false }]);
+		expect(onApply).toHaveBeenCalledWith({
+			overrides: [{ reference: extensionReference, enabled: false }],
+			explicitReset: true,
+		});
+	});
+
+	it("distinguishes applying an unchanged empty loadout from an explicit reset", () => {
+		const snapshot = createSnapshot();
+		snapshot.overrides = [];
+		const onApply = vi.fn();
+		const selector = new SessionLoadoutSelectorComponent({
+			snapshot,
+			agentDir: "/agent",
+			onApply,
+			onCancel: () => {},
+			requestRender: () => {},
+		});
+
+		selector.getResourceList().handleInput!("\n");
+
+		expect(onApply).toHaveBeenCalledWith({ overrides: [], explicitReset: false });
 	});
 });
 

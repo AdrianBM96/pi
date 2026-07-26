@@ -28,6 +28,11 @@ import {
 
 type ResourceCollection = keyof ResolvedPaths;
 
+export interface SessionLoadoutSelection {
+	overrides: LoadoutOverride[];
+	explicitReset: boolean;
+}
+
 type FlatEntry =
 	| { type: "reset" }
 	| { type: "group"; group: LoadoutResourceGroup }
@@ -107,7 +112,7 @@ class SessionLoadoutList implements Component, Focusable {
 	private resetSelected = false;
 	private _focused = false;
 
-	onApply?: (overrides: LoadoutOverride[]) => void;
+	onApply?: (selection: SessionLoadoutSelection) => void;
 	onCancel?: () => void;
 	onChange?: () => void;
 
@@ -253,9 +258,14 @@ class SessionLoadoutList implements Component, Focusable {
 			return;
 		}
 		if (keybindings.matches(data, "tui.select.confirm")) {
-			this.onApply?.(
-				buildSessionLoadoutOverrides(this.snapshot, this.enabledByReference, this.clearExistingOverrides),
-			);
+			this.onApply?.({
+				overrides: buildSessionLoadoutOverrides(
+					this.snapshot,
+					this.enabledByReference,
+					this.clearExistingOverrides,
+				),
+				explicitReset: this.clearExistingOverrides,
+			});
 			return;
 		}
 		if (data === " ") {
@@ -330,7 +340,7 @@ export class SessionLoadoutSelectorComponent extends Container implements Focusa
 		snapshot: LoadoutSnapshot;
 		agentDir: string;
 		terminalHeight?: number;
-		onApply: (overrides: LoadoutOverride[]) => void;
+		onApply: (selection: SessionLoadoutSelection) => void;
 		onCancel: () => void;
 		requestRender: () => void;
 	}) {

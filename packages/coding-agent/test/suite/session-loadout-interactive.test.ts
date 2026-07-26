@@ -5,6 +5,7 @@ import {
 	type LoadoutOverride,
 	type LoadoutSnapshot,
 } from "../../src/core/loadout.ts";
+import type { SessionLoadoutSelection } from "../../src/modes/interactive/components/session-loadout-selector.ts";
 import { InteractiveMode } from "../../src/modes/interactive/interactive-mode.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
@@ -21,7 +22,7 @@ type RestoreContext = {
 	sessionManager: Harness["sessionManager"];
 	getLoadoutRestoreDecisionKey: () => string;
 	showExtensionConfirm: (title: string, message: string) => Promise<boolean>;
-	applySessionLoadout: (overrides: LoadoutOverride[], persist: boolean) => Promise<void>;
+	applySessionLoadout: (selection: SessionLoadoutSelection, persist: boolean) => Promise<void>;
 };
 
 type ApplyContext = {
@@ -44,7 +45,7 @@ type ReloadBlockedContext = {
 
 type InteractiveModePrivate = {
 	maybeRestoreSavedLoadout(this: RestoreContext): Promise<void>;
-	applySessionLoadout(this: ApplyContext, overrides: LoadoutOverride[], persist: boolean): Promise<void>;
+	applySessionLoadout(this: ApplyContext, selection: SessionLoadoutSelection, persist: boolean): Promise<void>;
 	loadoutActionBlocked(this: Pick<ApplyContext, "session" | "showWarning">, action: "opening" | "applying"): boolean;
 	handleReloadCommand(this: ReloadBlockedContext): Promise<boolean>;
 };
@@ -81,7 +82,7 @@ describe("interactive session loadout restore", () => {
 		await interactiveModePrototype.maybeRestoreSavedLoadout.call(context);
 
 		expect(showExtensionConfirm).toHaveBeenCalledOnce();
-		expect(applySessionLoadout).toHaveBeenCalledWith(overrides, false);
+		expect(applySessionLoadout).toHaveBeenCalledWith({ overrides, explicitReset: false }, false);
 		expect(harness.sessionManager.getEntries()).toHaveLength(entryCount);
 	});
 
@@ -165,7 +166,7 @@ describe("interactive /loadout application", () => {
 			showWarning,
 		};
 
-		await interactiveModePrototype.applySessionLoadout.call(context, overrides, true);
+		await interactiveModePrototype.applySessionLoadout.call(context, { overrides, explicitReset: false }, true);
 
 		expect(setLoadoutOverrides).toHaveBeenCalledWith(overrides);
 		expect(handleReloadCommand).toHaveBeenCalledOnce();
@@ -173,9 +174,10 @@ describe("interactive /loadout application", () => {
 		expect(showWarning).toHaveBeenCalledWith("Saved loadout skill is unavailable");
 	});
 
-	it("does not write a reset marker when the declined saved loadout is already inactive", async () => {
+	it("writes a reset tombstone when reset is explicit after a declined restore", async () => {
 		const harness = await createTestHarness();
 		appendSessionLoadout(harness.sessionManager, overrides);
+		const entryCount = harness.sessionManager.getEntries().length;
 		const setLoadoutOverrides = vi.fn();
 		const context: ApplyContext = {
 			session: { isStreaming: false, isCompacting: false, isBashRunning: false },
@@ -190,9 +192,35 @@ describe("interactive /loadout application", () => {
 			showWarning: vi.fn(),
 		};
 
-		await interactiveModePrototype.applySessionLoadout.call(context, [], true);
+		await interactiveModePrototype.applySessionLoadout.call(context, { overrides: [], explicitReset: true }, true);
 
-		expect(setLoadoutOverrides).toHaveBeenCalledOnce();
+		expect(setLoadoutOverrides).toHaveBeenCalledWith([]);
+		expect(harness.sessionManager.getEntries()).toHaveLength(entryCount + 1);
+		expect(getSessionLoadout(harness.sessionManager)?.overrides).toEqual([]);
+	});
+
+	it("does not write a reset tombstone for an unchanged apply after a declined restore", async () => {
+		const harness = await createTestHarness();
+		appendSessionLoadout(harness.sessionManager, overrides);
+		const entryCount = harness.sessionManager.getEntries().length;
+		const setLoadoutOverrides = vi.fn();
+		const context: ApplyContext = {
+			session: { isStreaming: false, isCompacting: false, isBashRunning: false },
+			sessionManager: harness.sessionManager,
+			getLoadoutLoader: () => ({
+				getLoadoutSnapshot: () => ({ resources: [], overrides: [], diagnostics: [] }),
+				setLoadoutOverrides,
+			}),
+			loadoutActionBlocked: () => false,
+			handleReloadCommand: async () => true,
+			showLoadoutDiagnostics: () => {},
+			showWarning: vi.fn(),
+		};
+
+		await interactiveModePrototype.applySessionLoadout.call(context, { overrides: [], explicitReset: false }, true);
+
+		expect(setLoadoutOverrides).toHaveBeenCalledWith([]);
+		expect(harness.sessionManager.getEntries()).toHaveLength(entryCount);
 		expect(getSessionLoadout(harness.sessionManager)?.overrides).toEqual(overrides);
 	});
 
@@ -212,7 +240,7 @@ describe("interactive /loadout application", () => {
 			showWarning: vi.fn(),
 		};
 
-		await interactiveModePrototype.applySessionLoadout.call(context, overrides, true);
+		await interactiveModePrototype.applySessionLoadout.call(context, { overrides, explicitReset: false }, true);
 
 		expect(setLoadoutOverrides).toHaveBeenNthCalledWith(1, overrides);
 		expect(setLoadoutOverrides).toHaveBeenNthCalledWith(2, []);
@@ -244,7 +272,7 @@ describe("interactive /loadout application", () => {
 			showWarning,
 		};
 
-		await interactiveModePrototype.applySessionLoadout.call(context, overrides, true);
+		await interactiveModePrototype.applySessionLoadout.call(context, { overrides, explicitReset: false }, true);
 
 		expect(setLoadoutOverrides).not.toHaveBeenCalled();
 		expect(handleReloadCommand).not.toHaveBeenCalled();
