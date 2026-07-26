@@ -37,10 +37,16 @@ type ApplyContext = {
 	showWarning: (message: string) => void;
 };
 
+type ReloadBlockedContext = {
+	session: { isStreaming: boolean; isCompacting: boolean; isBashRunning: boolean };
+	showWarning: (message: string) => void;
+};
+
 type InteractiveModePrivate = {
 	maybeRestoreSavedLoadout(this: RestoreContext): Promise<void>;
 	applySessionLoadout(this: ApplyContext, overrides: LoadoutOverride[], persist: boolean): Promise<void>;
 	loadoutActionBlocked(this: Pick<ApplyContext, "session" | "showWarning">, action: "opening" | "applying"): boolean;
+	handleReloadCommand(this: ReloadBlockedContext): Promise<void>;
 };
 
 const interactiveModePrototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
@@ -120,6 +126,17 @@ describe("interactive session loadout restore", () => {
 		};
 		await interactiveModePrototype.maybeRestoreSavedLoadout.call(fresh);
 		expect(ignoredConfirm).not.toHaveBeenCalled();
+	});
+});
+
+describe("interactive reload blocking", () => {
+	it("blocks ordinary reload while direct user bash is running", async () => {
+		const showWarning = vi.fn();
+		await interactiveModePrototype.handleReloadCommand.call({
+			session: { isStreaming: false, isCompacting: false, isBashRunning: true },
+			showWarning,
+		});
+		expect(showWarning).toHaveBeenCalledWith("Wait for the bash command to finish before reloading.");
 	});
 });
 

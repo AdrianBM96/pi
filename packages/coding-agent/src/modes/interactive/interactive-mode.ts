@@ -5427,8 +5427,10 @@ export class InteractiveMode {
 			this.showWarning("Wait for compaction to finish before reloading.");
 			return;
 		}
-
-		this.resetExtensionUI();
+		if (this.session.isBashRunning) {
+			this.showWarning("Wait for the bash command to finish before reloading.");
+			return;
+		}
 
 		const reloadBox = new Container();
 		const borderColor = (s: string) => theme.fg("border", s);
@@ -5444,7 +5446,6 @@ export class InteractiveMode {
 		reloadBox.addChild(new Spacer(1));
 		reloadBox.addChild(new DynamicBorder(borderColor));
 
-		const previousEditor = this.editor;
 		this.editorContainer.clear();
 		this.editorContainer.addChild(reloadBox);
 		this.ui.setFocus(reloadBox);
@@ -5471,7 +5472,16 @@ export class InteractiveMode {
 		};
 
 		try {
-			await this.session.reload({ beforeSessionStart: restoreChatBeforeSessionStart });
+			const reloadResult = await this.session.reload({
+				beforeExtensionInvalidate: () => {
+					this.resetExtensionUI();
+					this.editorContainer.clear();
+					this.editorContainer.addChild(reloadBox);
+					this.ui.setFocus(reloadBox);
+					this.ui.requestRender();
+				},
+				beforeSessionStart: restoreChatBeforeSessionStart,
+			});
 			restoreChatBeforeSessionStart();
 			configureHttpDispatcher(this.settingsManager.getHttpIdleTimeoutMs());
 			this.keybindings.reload();
@@ -5507,6 +5517,9 @@ export class InteractiveMode {
 			if (modelsJsonError) {
 				this.showError(`models.json error: ${modelsJsonError}`);
 			}
+			if (reloadResult.modelFallbackMessage) {
+				this.showWarning(reloadResult.modelFallbackMessage);
+			}
 			this.showStatus(
 				savedImplicitProjectTrust
 					? "Reloaded keybindings, extensions, skills, prompts, themes, and context files; saved project trust"
@@ -5516,7 +5529,7 @@ export class InteractiveMode {
 			reloadBoxDismissed = true;
 		} catch (error) {
 			if (!reloadBoxDismissed) {
-				dismissReloadBox(previousEditor as Component);
+				dismissReloadBox(this.editor as Component);
 			}
 			this.showError(`Reload failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
