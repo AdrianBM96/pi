@@ -869,7 +869,7 @@ export class AgentSession {
 
 	/** Current model (may be undefined if not yet selected) */
 	get model(): Model<any> | undefined {
-		return this.agent.state.model;
+		return this.agent.hasModel ? this.agent.state.model : undefined;
 	}
 
 	/** Current thinking level */
@@ -2346,18 +2346,7 @@ export class AgentSession {
 			return `Active model "${previousModel.provider}/${previousModel.id}" is no longer available after reload. Switched to "${fallback.provider}/${fallback.id}".`;
 		}
 
-		this.agent.state.model = {
-			...previousModel,
-			id: "unknown",
-			name: "unknown",
-			api: "unknown",
-			provider: "unknown",
-			baseUrl: "",
-			reasoning: false,
-			input: [],
-			contextWindow: 0,
-			maxTokens: 0,
-		};
+		this.agent.clearModel();
 		this.agent.state.thinkingLevel = "off";
 		return `Active model "${previousModel.provider}/${previousModel.id}" is no longer available after reload. No configured model is available; use /model or /login to select one.`;
 	}

@@ -182,6 +182,7 @@ export {
 	type LoadoutResourceScope,
 	type LoadoutResourceType,
 	type LoadoutSnapshot,
+	loadoutOverridesEqual,
 	type PackageLoadoutResourceReference,
 	parseLoadoutEntryPayload,
 	type ResolvedLoadoutOverlay,

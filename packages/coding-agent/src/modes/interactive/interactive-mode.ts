@@ -75,7 +75,12 @@ import type {
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
-import { appendSessionLoadout, getSessionLoadout, type LoadoutOverride } from "../../core/loadout.ts";
+import {
+	appendSessionLoadout,
+	getSessionLoadout,
+	type LoadoutOverride,
+	loadoutOverridesEqual,
+} from "../../core/loadout.ts";
 import { createCompactionSummaryMessage } from "../../core/messages.ts";
 import {
 	defaultModelPerProvider,
@@ -4181,9 +4186,15 @@ export class InteractiveMode {
 			this.showWarning("Session loadouts are unavailable with the configured resource loader.");
 			return;
 		}
+		const previousOverrides = loader.getLoadoutSnapshot().overrides;
 		loader.setLoadoutOverrides(overrides);
-		if (persist) appendSessionLoadout(this.sessionManager, overrides);
-		await this.handleReloadCommand();
+		if (!(await this.handleReloadCommand())) {
+			loader.setLoadoutOverrides(previousOverrides);
+			return;
+		}
+		if (persist && !loadoutOverridesEqual(previousOverrides, overrides)) {
+			appendSessionLoadout(this.sessionManager, overrides);
+		}
 		this.showLoadoutDiagnostics();
 	}
 
@@ -5195,7 +5206,7 @@ export class InteractiveMode {
 
 		let selectedModel: Model<any> | undefined;
 		let selectionError: string | undefined;
-		if (isUnknownModel(previousModel)) {
+		if (!previousModel || isUnknownModel(previousModel)) {
 			const availableModels = await this.session.modelRuntime.getAvailable();
 			const providerModels = availableModels.filter((model) => model.provider === providerId);
 			if (!hasDefaultModelProvider(providerId)) {
@@ -5418,18 +5429,18 @@ export class InteractiveMode {
 	// Command handlers
 	// =========================================================================
 
-	private async handleReloadCommand(): Promise<void> {
+	private async handleReloadCommand(): Promise<boolean> {
 		if (this.session.isStreaming) {
 			this.showWarning("Wait for the current response to finish before reloading.");
-			return;
+			return false;
 		}
 		if (this.session.isCompacting) {
 			this.showWarning("Wait for compaction to finish before reloading.");
-			return;
+			return false;
 		}
 		if (this.session.isBashRunning) {
 			this.showWarning("Wait for the bash command to finish before reloading.");
-			return;
+			return false;
 		}
 
 		const reloadBox = new Container();
@@ -5527,11 +5538,13 @@ export class InteractiveMode {
 			);
 			dismissReloadBox(this.editor as Component);
 			reloadBoxDismissed = true;
+			return true;
 		} catch (error) {
 			if (!reloadBoxDismissed) {
 				dismissReloadBox(this.editor as Component);
 			}
 			this.showError(`Reload failed: ${error instanceof Error ? error.message : String(error)}`);
+			return false;
 		}
 	}
 

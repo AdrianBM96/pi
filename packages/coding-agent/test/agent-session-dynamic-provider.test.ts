@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Provider } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
@@ -261,6 +261,42 @@ describe("AgentSession dynamic provider registration", () => {
 		expect(result.modelFallbackMessage).toContain(
 			'Active model "temporary-provider/temporary-model" is no longer available after reload.',
 		);
+		session.dispose();
+	});
+
+	it("clears a removed active model when reload has no fallback", async () => {
+		let enabled = true;
+		const session = await createSession([
+			(pi) => {
+				if (!enabled) return;
+				pi.registerProvider("temporary-provider", {
+					baseUrl: "https://temporary.test",
+					apiKey: "test-key",
+					api: "openai-completions",
+					models: [
+						{
+							id: "temporary-model",
+							name: "Temporary Model",
+							reasoning: false,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 128000,
+							maxTokens: 4096,
+						},
+					],
+				});
+			},
+		]);
+		await session.modelRuntime.refresh({ allowNetwork: false });
+		await session.setModel(session.modelRuntime.getModel("temporary-provider", "temporary-model")!);
+		vi.spyOn(session.modelRuntime, "getAvailableSnapshot").mockReturnValue([]);
+
+		enabled = false;
+		const result = await session.reload();
+
+		expect(session.model).toBeUndefined();
+		expect(session.thinkingLevel).toBe("off");
+		expect(result.modelFallbackMessage).toContain("No configured model is available");
 		session.dispose();
 	});
 });

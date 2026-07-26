@@ -32,7 +32,7 @@ type ApplyContext = {
 		setLoadoutOverrides: (overrides: readonly LoadoutOverride[]) => void;
 	};
 	loadoutActionBlocked: (action: "opening" | "applying") => boolean;
-	handleReloadCommand: () => Promise<void>;
+	handleReloadCommand: () => Promise<boolean>;
 	showLoadoutDiagnostics: () => void;
 	showWarning: (message: string) => void;
 };
@@ -46,7 +46,7 @@ type InteractiveModePrivate = {
 	maybeRestoreSavedLoadout(this: RestoreContext): Promise<void>;
 	applySessionLoadout(this: ApplyContext, overrides: LoadoutOverride[], persist: boolean): Promise<void>;
 	loadoutActionBlocked(this: Pick<ApplyContext, "session" | "showWarning">, action: "opening" | "applying"): boolean;
-	handleReloadCommand(this: ReloadBlockedContext): Promise<void>;
+	handleReloadCommand(this: ReloadBlockedContext): Promise<boolean>;
 };
 
 const interactiveModePrototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
@@ -144,11 +144,11 @@ describe("interactive /loadout application", () => {
 	it("persists a deliberate change, reloads once, and reports unmatched resources", async () => {
 		const harness = await createTestHarness();
 		const setLoadoutOverrides = vi.fn();
-		const handleReloadCommand = vi.fn(async () => {});
+		const handleReloadCommand = vi.fn(async () => true);
 		const showWarning = vi.fn();
 		const snapshot: LoadoutSnapshot = {
 			resources: [],
-			overrides,
+			overrides: [],
 			diagnostics: [{ type: "warning", message: "Saved loadout skill is unavailable" }],
 		};
 		const context: ApplyContext = {
@@ -173,6 +173,53 @@ describe("interactive /loadout application", () => {
 		expect(showWarning).toHaveBeenCalledWith("Saved loadout skill is unavailable");
 	});
 
+	it("does not write a reset marker when the declined saved loadout is already inactive", async () => {
+		const harness = await createTestHarness();
+		appendSessionLoadout(harness.sessionManager, overrides);
+		const setLoadoutOverrides = vi.fn();
+		const context: ApplyContext = {
+			session: { isStreaming: false, isCompacting: false, isBashRunning: false },
+			sessionManager: harness.sessionManager,
+			getLoadoutLoader: () => ({
+				getLoadoutSnapshot: () => ({ resources: [], overrides: [], diagnostics: [] }),
+				setLoadoutOverrides,
+			}),
+			loadoutActionBlocked: () => false,
+			handleReloadCommand: async () => true,
+			showLoadoutDiagnostics: () => {},
+			showWarning: vi.fn(),
+		};
+
+		await interactiveModePrototype.applySessionLoadout.call(context, [], true);
+
+		expect(setLoadoutOverrides).toHaveBeenCalledOnce();
+		expect(getSessionLoadout(harness.sessionManager)?.overrides).toEqual(overrides);
+	});
+
+	it("rolls back in-memory overrides and persistence when reload fails", async () => {
+		const harness = await createTestHarness();
+		const setLoadoutOverrides = vi.fn();
+		const context: ApplyContext = {
+			session: { isStreaming: false, isCompacting: false, isBashRunning: false },
+			sessionManager: harness.sessionManager,
+			getLoadoutLoader: () => ({
+				getLoadoutSnapshot: () => ({ resources: [], overrides: [], diagnostics: [] }),
+				setLoadoutOverrides,
+			}),
+			loadoutActionBlocked: () => false,
+			handleReloadCommand: async () => false,
+			showLoadoutDiagnostics: vi.fn(),
+			showWarning: vi.fn(),
+		};
+
+		await interactiveModePrototype.applySessionLoadout.call(context, overrides, true);
+
+		expect(setLoadoutOverrides).toHaveBeenNthCalledWith(1, overrides);
+		expect(setLoadoutOverrides).toHaveBeenNthCalledWith(2, []);
+		expect(getSessionLoadout(harness.sessionManager)).toBeUndefined();
+		expect(context.showLoadoutDiagnostics).not.toHaveBeenCalled();
+	});
+
 	it.each([
 		["streaming", { isStreaming: true, isCompacting: false, isBashRunning: false }],
 		["compaction", { isStreaming: false, isCompacting: true, isBashRunning: false }],
@@ -180,7 +227,7 @@ describe("interactive /loadout application", () => {
 	])("blocks application during %s", async (_name, session) => {
 		const harness = await createTestHarness();
 		const setLoadoutOverrides = vi.fn();
-		const handleReloadCommand = vi.fn(async () => {});
+		const handleReloadCommand = vi.fn(async () => true);
 		const showWarning = vi.fn();
 		const context: ApplyContext = {
 			session,

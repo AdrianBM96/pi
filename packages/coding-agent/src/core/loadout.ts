@@ -332,7 +332,7 @@ export function getSessionLoadout(sessionManager: Pick<SessionManager, "getEntri
 	return getLatestLoadoutEntry(sessionManager.getEntries());
 }
 
-function overrideSetsEqual(left: readonly LoadoutOverride[], right: readonly LoadoutOverride[]): boolean {
+export function loadoutOverridesEqual(left: readonly LoadoutOverride[], right: readonly LoadoutOverride[]): boolean {
 	if (left.length !== right.length) return false;
 	const rightByKey = new Map(
 		right.map((override) => [getLoadoutResourceReferenceKey(override.reference), override.enabled]),
@@ -355,7 +355,7 @@ export function appendSessionLoadout(
 	const latest = getLatestLoadoutEntry(sessionManager.getEntries());
 	if (payload.overrides.length === 0) {
 		if (!latest || latest.overrides.length === 0) return undefined;
-	} else if (latest && overrideSetsEqual(latest.overrides, payload.overrides)) {
+	} else if (latest && loadoutOverridesEqual(latest.overrides, payload.overrides)) {
 		return undefined;
 	}
 	return sessionManager.appendCustomEntry(LOADOUT_CUSTOM_TYPE, payload);
