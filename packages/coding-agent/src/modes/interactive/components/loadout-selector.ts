@@ -24,10 +24,10 @@ import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
 
 type ResourceType = "extensions" | "skills" | "prompts" | "themes";
-type ConfigWriteScope = "global" | "project";
+type LoadoutWriteScope = "global" | "project";
 type SettingsScope = "user" | "project";
 type ProjectOverrideState = "inherit" | "load" | "unload";
-export type ScopedResolvedPaths = Record<ConfigWriteScope, ResolvedPaths>;
+export type ScopedResolvedPaths = Record<LoadoutWriteScope, ResolvedPaths>;
 
 const RESOURCE_TYPES = ["extensions", "skills", "prompts", "themes"] as const satisfies readonly ResourceType[];
 
@@ -184,16 +184,16 @@ type FlatEntry =
 	| { type: "subgroup"; subgroup: ResourceSubgroup; group: ResourceGroup }
 	| { type: "item"; item: ResourceItem };
 
-class ConfigSelectorHeader implements Component {
-	private writeScope: ConfigWriteScope;
+class LoadoutSelectorHeader implements Component {
+	private writeScope: LoadoutWriteScope;
 	private projectModeAvailable: boolean;
 
-	constructor(writeScope: ConfigWriteScope, projectModeAvailable: boolean) {
+	constructor(writeScope: LoadoutWriteScope, projectModeAvailable: boolean) {
 		this.writeScope = writeScope;
 		this.projectModeAvailable = projectModeAvailable;
 	}
 
-	setWriteScope(writeScope: ConfigWriteScope): void {
+	setWriteScope(writeScope: LoadoutWriteScope): void {
 		this.writeScope = writeScope;
 	}
 
@@ -220,7 +220,7 @@ class ConfigSelectorHeader implements Component {
 }
 
 class ResourceList implements Component, Focusable {
-	private groupsByScope: Record<ConfigWriteScope, ResourceGroup[]>;
+	private groupsByScope: Record<LoadoutWriteScope, ResourceGroup[]>;
 	private flatItems: FlatEntry[] = [];
 	private filteredItems: FlatEntry[] = [];
 	private selectedIndex = 0;
@@ -229,7 +229,7 @@ class ResourceList implements Component, Focusable {
 	private settingsManager: SettingsManager;
 	private cwd: string;
 	private agentDir: string;
-	private writeScope: ConfigWriteScope;
+	private writeScope: LoadoutWriteScope;
 	private inheritedEnabledByKey: Map<string, boolean>;
 
 	public onCancel?: () => void;
@@ -247,12 +247,12 @@ class ResourceList implements Component, Focusable {
 	}
 
 	constructor(
-		groupsByScope: Record<ConfigWriteScope, ResourceGroup[]>,
+		groupsByScope: Record<LoadoutWriteScope, ResourceGroup[]>,
 		settingsManager: SettingsManager,
 		cwd: string,
 		agentDir: string,
 		terminalHeight?: number,
-		writeScope: ConfigWriteScope = "global",
+		writeScope: LoadoutWriteScope = "global",
 	) {
 		this.groupsByScope = groupsByScope;
 		this.settingsManager = settingsManager;
@@ -268,7 +268,7 @@ class ResourceList implements Component, Focusable {
 		this.filteredItems = [...this.flatItems];
 	}
 
-	setWriteScope(writeScope: ConfigWriteScope): void {
+	setWriteScope(writeScope: LoadoutWriteScope): void {
 		this.writeScope = writeScope;
 		this.buildFlatList();
 		this.filterItems(this.searchInput.getValue());
@@ -863,10 +863,10 @@ class ResourceList implements Component, Focusable {
 	}
 }
 
-export class ConfigSelectorComponent extends Container implements Focusable {
-	private header: ConfigSelectorHeader;
+export class LoadoutSelectorComponent extends Container implements Focusable {
+	private header: LoadoutSelectorHeader;
 	private resourceList: ResourceList;
-	private writeScope: ConfigWriteScope;
+	private writeScope: LoadoutWriteScope;
 
 	private _focused = false;
 	get focused(): boolean {
@@ -886,7 +886,7 @@ export class ConfigSelectorComponent extends Container implements Focusable {
 		onExit: () => void,
 		requestRender: () => void,
 		terminalHeight?: number,
-		writeScope: ConfigWriteScope = "global",
+		writeScope: LoadoutWriteScope = "global",
 		projectModeAvailable = true,
 	) {
 		super();
@@ -901,7 +901,7 @@ export class ConfigSelectorComponent extends Container implements Focusable {
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
-		this.header = new ConfigSelectorHeader(this.writeScope, projectModeAvailable);
+		this.header = new LoadoutSelectorHeader(this.writeScope, projectModeAvailable);
 		this.addChild(this.header);
 		this.addChild(new Spacer(1));
 
