@@ -5,7 +5,7 @@
 
 ### Added
 
-- Added `AgentHarness.getPhase()` for observing the current lifecycle phase.
+- Added `AgentHarness.getPhase()` for observing the current lifecycle phase and `terminate()` for stopping a compromised run without further persistence.
 
 ## [0.83.0] - 2026-07-29
 
