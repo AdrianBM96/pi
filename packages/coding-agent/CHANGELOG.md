@@ -5,6 +5,7 @@
 ### Added
 
 - Added `--alt` to run interactive mode with the alternate-screen TUI ([#7304](https://github.com/earendil-works/pi/issues/7304)).
+- Added an experimental `PI_EXPERIMENTAL=1` client/server CLI with durable server-owned sessions, authenticated Unix socket transport, and a remote-session TUI.
 
 ### Fixed
 
@@ -35,6 +36,7 @@
 ### Changed
 
 - Changed inherited OAuth credential resolution to refresh tokens with less than five minutes of validity remaining instead of waiting until expiration ([#7168](https://github.com/earendil-works/pi/pull/7168)).
+
 
 ### Fixed
 
