@@ -1,3 +1,13 @@
+import {
+	ImageContentSchema as AiImageContentSchema,
+	TextContentSchema as AiTextContentSchema,
+	ThinkingContentSchema as AiThinkingContentSchema,
+	UsageSchema as AiUsageSchema,
+	ModelCostRatesSchema,
+	ModelThinkingLevelSchema,
+	StopReasonSchema,
+	ToolCallSchema,
+} from "@earendil-works/pi-ai/schemas";
 import Type, { type Static } from "typebox";
 
 export const PROTOCOL_VERSION = 2 as const;
@@ -23,15 +33,7 @@ const JsonValueRecursiveSchema = Type.Cyclic(
 );
 export const JsonValueSchema = Type.Unsafe<JsonValue>(JsonValueRecursiveSchema);
 
-export const ThinkingLevelSchema = Type.Union([
-	Type.Literal("off"),
-	Type.Literal("minimal"),
-	Type.Literal("low"),
-	Type.Literal("medium"),
-	Type.Literal("high"),
-	Type.Literal("xhigh"),
-	Type.Literal("max"),
-]);
+export const ThinkingLevelSchema = ModelThinkingLevelSchema;
 export type ThinkingLevel = Static<typeof ThinkingLevelSchema>;
 
 /** Matches AgentHarnessPhase so adapters do not need a second phase vocabulary. */
@@ -50,12 +52,7 @@ export const ModelRefSchema = StrictObject({
 });
 export type ModelRef = Static<typeof ModelRefSchema>;
 
-export const ModelCostSchema = StrictObject({
-	input: Type.Number({ minimum: 0 }),
-	output: Type.Number({ minimum: 0 }),
-	cacheRead: Type.Number({ minimum: 0 }),
-	cacheWrite: Type.Number({ minimum: 0 }),
-});
+export const ModelCostSchema = ModelCostRatesSchema;
 
 export const ModelMetadataSchema = StrictObject({
 	provider: IdSchema,
@@ -72,26 +69,18 @@ export const ModelMetadataSchema = StrictObject({
 });
 export type ModelMetadata = Static<typeof ModelMetadataSchema>;
 
-export const TextContentSchema = StrictObject({
-	type: Type.Literal("text"),
-	text: Type.String(),
-});
-export const ThinkingContentSchema = StrictObject({
-	type: Type.Literal("thinking"),
-	thinking: Type.String(),
-	redacted: Type.Optional(Type.Boolean()),
-});
-export const ImageContentSchema = StrictObject({
-	type: Type.Literal("image"),
-	data: Type.String(),
-	mimeType: Type.String({ minLength: 1 }),
-});
-export const ToolCallContentSchema = StrictObject({
-	type: Type.Literal("tool_call"),
-	toolCallId: IdSchema,
-	toolName: IdSchema,
-	input: JsonValueSchema,
-});
+export const TextContentSchema = Type.Omit(AiTextContentSchema, ["textSignature"]);
+export const ThinkingContentSchema = Type.Omit(AiThinkingContentSchema, ["thinkingSignature"]);
+export const ImageContentSchema = AiImageContentSchema;
+export const ToolCallContentSchema = Type.Omit(
+	StrictObject({
+		...ToolCallSchema.properties,
+		id: IdSchema,
+		name: IdSchema,
+		arguments: Type.Record(Type.String(), JsonValueSchema),
+	}),
+	["thoughtSignature"],
+);
 export const UserContentSchema = Type.Union([TextContentSchema, ImageContentSchema]);
 export const AssistantContentSchema = Type.Union([TextContentSchema, ThinkingContentSchema, ToolCallContentSchema]);
 export const ToolContentSchema = Type.Union([TextContentSchema, ImageContentSchema]);
@@ -100,21 +89,7 @@ export type ThinkingContent = Static<typeof ThinkingContentSchema>;
 export type ImageContent = Static<typeof ImageContentSchema>;
 export type ToolCallContent = Static<typeof ToolCallContentSchema>;
 
-export const UsageSchema = StrictObject({
-	input: Type.Integer({ minimum: 0 }),
-	output: Type.Integer({ minimum: 0 }),
-	cacheRead: Type.Integer({ minimum: 0 }),
-	cacheWrite: Type.Integer({ minimum: 0 }),
-	reasoning: Type.Optional(Type.Integer({ minimum: 0 })),
-	totalTokens: Type.Integer({ minimum: 0 }),
-	cost: StrictObject({
-		input: Type.Number({ minimum: 0 }),
-		output: Type.Number({ minimum: 0 }),
-		cacheRead: Type.Number({ minimum: 0 }),
-		cacheWrite: Type.Number({ minimum: 0 }),
-		total: Type.Number({ minimum: 0 }),
-	}),
-});
+export const UsageSchema = AiUsageSchema;
 export type Usage = Static<typeof UsageSchema>;
 
 export const UserTranscriptItemSchema = StrictObject({
@@ -136,15 +111,7 @@ export const AssistantTranscriptItemSchema = StrictObject({
 	model: ModelRefSchema,
 	responseModel: Type.Optional(Type.String({ minLength: 1 })),
 	usage: Type.Optional(UsageSchema),
-	stopReason: Type.Optional(
-		Type.Union([
-			Type.Literal("stop"),
-			Type.Literal("length"),
-			Type.Literal("tool_use"),
-			Type.Literal("error"),
-			Type.Literal("aborted"),
-		]),
-	),
+	stopReason: Type.Optional(Type.Exclude(StopReasonSchema, Type.Literal("pending"))),
 	errorMessage: Type.Optional(Type.String()),
 	timestamp: TimestampSchema,
 });

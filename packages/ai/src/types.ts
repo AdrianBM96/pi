@@ -1,3 +1,4 @@
+import type { Static, TSchema } from "typebox";
 import type { AnthropicOptions } from "./api/anthropic-messages.ts";
 import type { AzureOpenAIResponsesOptions } from "./api/azure-openai-responses.ts";
 import type { BedrockOptions } from "./api/bedrock-converse-stream.ts";
@@ -8,6 +9,17 @@ import type { OpenAICodexResponsesOptions } from "./api/openai-codex-responses.t
 import type { OpenAICompletionsOptions } from "./api/openai-completions.ts";
 import type { OpenAIResponsesOptions } from "./api/openai-responses.ts";
 import type { PiMessagesOptions } from "./api/pi-messages.ts";
+import type {
+	ImageContentSchema,
+	ModelCostRatesSchema,
+	ModelThinkingLevelSchema,
+	StopReasonSchema,
+	TextContentSchema,
+	ThinkingContentSchema,
+	ThinkingLevelSchema,
+	ToolCallSchema,
+	UsageSchema,
+} from "./schemas.ts";
 import type { AssistantMessageDiagnostic } from "./utils/diagnostics.ts";
 import type { AssistantMessageEventStream } from "./utils/event-stream.ts";
 
@@ -76,8 +88,8 @@ export type KnownImagesProvider = "openrouter";
 
 export type ImagesProviderId = KnownImagesProvider | string;
 
-export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-export type ModelThinkingLevel = "off" | ThinkingLevel;
+export type ThinkingLevel = Static<typeof ThinkingLevelSchema>;
+export type ModelThinkingLevel = Static<typeof ModelThinkingLevelSchema>;
 export type ThinkingLevelMap = Partial<Record<ModelThinkingLevel, string | null>>;
 export type ChatTemplateKwargValue =
 	| string
@@ -335,60 +347,12 @@ export interface TextSignatureV1 {
 	phase?: "commentary" | "final_answer";
 }
 
-export interface TextContent {
-	type: "text";
-	text: string;
-	textSignature?: string; // e.g., for OpenAI responses, message metadata (legacy id string or TextSignatureV1 JSON)
-}
-
-export interface ThinkingContent {
-	type: "thinking";
-	thinking: string;
-	thinkingSignature?: string; // e.g., for OpenAI responses, the reasoning item ID
-	/** When true, the thinking content was redacted by safety filters. The opaque
-	 *  encrypted payload is stored in `thinkingSignature` so it can be passed back
-	 *  to the API for multi-turn continuity. */
-	redacted?: boolean;
-}
-
-export interface ImageContent {
-	type: "image";
-	data: string; // base64 encoded image data
-	mimeType: string; // e.g., "image/jpeg", "image/png"
-}
-
-export interface ToolCall {
-	type: "toolCall";
-	id: string;
-	name: string;
-	arguments: Record<string, any>;
-	thoughtSignature?: string; // Google-specific: opaque signature for reusing thought context
-}
-
-export interface Usage {
-	input: number;
-	output: number;
-	cacheRead: number;
-	cacheWrite: number;
-	/** Subset of `cacheWrite` written with 1h retention. Only Anthropic reports this split. */
-	cacheWrite1h?: number;
-	/**
-	 * Reasoning/thinking tokens, when the provider reports them. This is a subset of
-	 * `output`: `output` already includes these tokens. Set to a number (possibly 0) by
-	 * providers that expose a reasoning breakdown; left undefined by providers that don't.
-	 */
-	reasoning?: number;
-	totalTokens: number;
-	cost: {
-		input: number;
-		output: number;
-		cacheRead: number;
-		cacheWrite: number;
-		total: number;
-	};
-}
-
-export type StopReason = "pending" | "stop" | "length" | "toolUse" | "error" | "aborted";
+export type TextContent = Static<typeof TextContentSchema>;
+export type ThinkingContent = Static<typeof ThinkingContentSchema>;
+export type ImageContent = Static<typeof ImageContentSchema>;
+export type ToolCall = Static<typeof ToolCallSchema>;
+export type Usage = Static<typeof UsageSchema>;
+export type StopReason = Static<typeof StopReasonSchema>;
 
 export interface UserMessage {
 	role: "user";
@@ -452,8 +416,6 @@ export interface AssistantImages {
 	errorMessage?: string;
 	timestamp: number; // Unix timestamp in milliseconds
 }
-
-import type { TSchema } from "typebox";
 
 /** OpenAI grammar variants for constrained sampling. */
 export type GrammarFormat = "openai_lark" | "openai_regex";
@@ -738,12 +700,7 @@ export interface VercelGatewayRouting {
 	order?: string[];
 }
 
-export interface ModelCostRates {
-	input: number; // $/million tokens
-	output: number; // $/million tokens
-	cacheRead: number; // $/million tokens
-	cacheWrite: number; // $/million tokens
-}
+export type ModelCostRates = Static<typeof ModelCostRatesSchema>;
 
 export interface ModelCostTier extends ModelCostRates {
 	/** Use this tier for requests whose total input usage exceeds this token count. */

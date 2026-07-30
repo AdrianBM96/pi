@@ -111,8 +111,40 @@ describe("protocol validation", () => {
 						input: { path: "/tmp/file" },
 						content: [{ type: "text", text: "done" }],
 						details: { lines: [1, 2, 3], cached: false },
+						usage: {
+							input: 1,
+							output: 2,
+							cacheRead: 3,
+							cacheWrite: 4,
+							cacheWrite1h: 2,
+							totalTokens: 10,
+							cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4, total: 1 },
+						},
 						status: "complete",
 						isError: false,
+						timestamp: 1,
+					},
+				},
+			},
+		};
+		expect(parseServerMessage(message)).toEqual(message);
+	});
+
+	test("uses pi-ai tool calls and stop reasons in transcript items", () => {
+		const message = {
+			type: "event",
+			event: {
+				type: "session_progress",
+				sessionId: "session-1",
+				progress: {
+					type: "item_finished",
+					item: {
+						id: "assistant-1",
+						role: "assistant",
+						content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "/tmp/file" } }],
+						status: "complete",
+						model: { provider: "faux", id: "faux-model" },
+						stopReason: "toolUse",
 						timestamp: 1,
 					},
 				},
