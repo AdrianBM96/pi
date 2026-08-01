@@ -766,7 +766,7 @@ export abstract class TuiBase extends Container implements TUI {
 		this.requestRender();
 	}
 
-	protected renderImmediately(force = false): void {
+	protected renderImmediately(force = false, render: () => void = () => this.doRender()): void {
 		if (force) this.resetRenderState();
 		this.renderRequested = false;
 		if (this.renderTimer) {
@@ -774,7 +774,7 @@ export abstract class TuiBase extends Container implements TUI {
 			this.renderTimer = undefined;
 		}
 		this.lastRenderAt = performance.now();
-		this.doRender();
+		render();
 	}
 
 	stop(): void {

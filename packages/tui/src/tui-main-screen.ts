@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { deleteKittyImage, isImageLine } from "./terminal-image.ts";
+import { cropKittyImageLine, deleteKittyImage, getKittyImageMetadata, isImageLine } from "./terminal-image.ts";
 import { type TUI, TuiBase } from "./tui.ts";
 import { visibleWidth } from "./utils.ts";
 
@@ -143,6 +143,107 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		return this.deleteKittyImages(ids);
 	}
 
+	private renderLines(
+		width: number,
+		height: number,
+	): { lines: string[]; cursorPos: { row: number; col: number } | null } {
+		let lines = this.render(width);
+		if (this.hasOverlayEntries) lines = this.compositeOverlays(lines, width, height);
+		const cursorPos = this.extractCursorPosition(lines, height);
+		return { lines: this.applyLineResets(lines), cursorPos };
+	}
+
+	private renderLineRange(lines: string[], start: number, end: number): string {
+		let buffer = "";
+		for (let i = start; i < end; i++) {
+			if (i > start) buffer += "\r\n";
+			const line = lines[i]!;
+			const isImage = isImageLine(line);
+			const imageReservedRows = isImage ? this.getKittyImageReservedRows(lines, i, end - 1) : 1;
+			if (imageReservedRows > 1 && imageReservedRows <= this.terminal.rows) {
+				buffer += "\r\n".repeat(imageReservedRows - 1);
+				buffer += `\x1b[${imageReservedRows - 1}A${line}\x1b[${imageReservedRows - 1}B`;
+				i += imageReservedRows - 1;
+				continue;
+			}
+			buffer += line;
+		}
+		return buffer;
+	}
+
+	private getViewportLines(
+		lines: string[],
+		height: number,
+		viewportTop: number,
+	): { lines: string[]; viewportTop: number } {
+		const viewportLines = lines.slice(viewportTop, viewportTop + height);
+		if (viewportTop === 0 || viewportLines.length === 0) return { lines: viewportLines, viewportTop };
+
+		for (let imageRow = viewportTop - 1; imageRow >= 0; imageRow--) {
+			const imageLine = lines[imageRow]!;
+			const metadata = getKittyImageMetadata(imageLine);
+			if (metadata) {
+				const hiddenRows = viewportTop - imageRow;
+				const reservedRows = this.getKittyImageReservedRows(lines, imageRow);
+				if (hiddenRows < reservedRows) {
+					const visibleRows = Math.min(reservedRows - hiddenRows, viewportLines.length);
+					viewportLines[0] = cropKittyImageLine(imageLine, hiddenRows, visibleRows);
+				}
+				break;
+			}
+			if (isImageLine(imageLine) || visibleWidth(imageLine) > 0) break;
+		}
+		return { lines: viewportLines, viewportTop };
+	}
+
+	private repaintVisibleKittyImages(): void {
+		const viewport = this.getViewportLines(this.previousLines, this.terminal.rows, this.previousViewportTop);
+		let placements = "";
+		let cursorRow = this.hardwareCursorRow;
+		for (let row = 0; row < viewport.lines.length; row++) {
+			const line = viewport.lines[row]!;
+			if (extractKittyImageIds(line).length === 0) continue;
+			const targetRow = viewport.viewportTop + row;
+			const rowDelta = targetRow - cursorRow;
+			if (rowDelta > 0) placements += `\x1b[${rowDelta}B`;
+			else if (rowDelta < 0) placements += `\x1b[${-rowDelta}A`;
+			placements += `\r${line}`;
+			cursorRow = targetRow;
+		}
+		if (placements) this.terminal.write(`\x1b[?2026h\x1b7${placements}\x1b8\x1b[?2026l`);
+	}
+
+	/** Update the main screen, recovering only its viewport when external output may have replaced it. */
+	protected renderMainScreenImmediately(viewportDirty: boolean): void {
+		if (!viewportDirty) {
+			this.renderImmediately();
+			this.repaintVisibleKittyImages();
+			return;
+		}
+
+		this.renderImmediately(false, () => {
+			if (this.stopped) return;
+			const width = this.terminal.columns;
+			const height = this.terminal.rows;
+			const { lines, cursorPos } = this.renderLines(width, height);
+			const viewportTop = Math.max(0, lines.length - height);
+			const viewport = this.getViewportLines(lines, height, viewportTop);
+			this.fullRedrawCount += 1;
+			this.terminal.write(
+				`\x1b[?2026h${this.deleteKittyImages(this.previousKittyImageIds)}\x1b[2J\x1b[H${this.renderLineRange(viewport.lines, 0, viewport.lines.length)}\x1b[?2026l`,
+			);
+			this.cursorRow = Math.max(0, lines.length - 1);
+			this.hardwareCursorRow = this.cursorRow;
+			this.maxLinesRendered = lines.length;
+			this.previousViewportTop = viewport.viewportTop;
+			this.positionHardwareCursor(cursorPos, lines.length);
+			this.previousLines = lines;
+			this.previousKittyImageIds = this.collectKittyImageIds(lines);
+			this.previousWidth = width;
+			this.previousHeight = height;
+		});
+	}
+
 	protected doRender(): void {
 		if (this.stopped) return;
 		const width = this.terminal.columns;
@@ -159,18 +260,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			return targetScreenRow - currentScreenRow;
 		};
 
-		// Render all components to get new lines
-		let newLines = this.render(width);
-
-		// Composite overlays into the rendered lines (before differential compare)
-		if (this.hasOverlayEntries) {
-			newLines = this.compositeOverlays(newLines, width, height);
-		}
-
-		// Extract cursor position before applying line resets (marker must be found first)
-		const cursorPos = this.extractCursorPosition(newLines, height);
-
-		newLines = this.applyLineResets(newLines);
+		const { lines: newLines, cursorPos } = this.renderLines(width, height);
 
 		// Helper to clear scrollback and viewport and render all new lines
 		const fullRender = (clear: boolean): void => {
@@ -180,23 +270,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 				buffer += this.deleteKittyImages(this.previousKittyImageIds);
 				buffer += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, then clear scrollback
 			}
-			for (let i = 0; i < newLines.length; i++) {
-				if (i > 0) buffer += "\r\n";
-				const line = newLines[i];
-				const isImage = isImageLine(line);
-				const imageReservedRows = isImage ? this.getKittyImageReservedRows(newLines, i) : 1;
-				if (imageReservedRows > 1 && imageReservedRows <= height) {
-					for (let row = 1; row < imageReservedRows; row++) {
-						buffer += "\r\n";
-					}
-					buffer += `\x1b[${imageReservedRows - 1}A`;
-					buffer += line;
-					buffer += `\x1b[${imageReservedRows - 1}B`;
-					i += imageReservedRows - 1;
-					continue;
-				}
-				buffer += line;
-			}
+			buffer += this.renderLineRange(newLines, 0, newLines.length);
 			buffer += "\x1b[?2026l"; // End synchronized output
 			this.terminal.write(buffer);
 			this.cursorRow = Math.max(0, newLines.length - 1);
