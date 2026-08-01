@@ -3,8 +3,9 @@ import type {
 	JsonlSessionCreateOptions,
 	JsonlSessionListOptions,
 	JsonlSessionMetadata,
+	SessionCatalog,
+	SessionEntries,
 	SessionForkSelection,
-	SessionReader,
 	SessionStore,
 	SessionTreeEntry,
 } from "../types.ts";
@@ -12,7 +13,7 @@ import { SessionError, toError } from "../types.ts";
 import { readSessionEntriesForFork } from "./fork.ts";
 import { KeyedOperationQueue } from "./keyed-operation-queue.ts";
 import { createSessionId, createTimestamp, getFileSystemResultOrThrow } from "./repository.ts";
-import { createSessionEntryCollectionReader, SessionEntryCollection } from "./session-entry-collection.ts";
+import { SessionEntryCollection } from "./session-entry-collection.ts";
 
 export interface JsonlSessionStoreOptions {
 	fs: JsonlSessionStoreFileSystem;
@@ -211,6 +212,28 @@ class JsonlSessionStore
 	private disposed = false;
 	private disposePromise: Promise<void> | undefined;
 
+	readonly sessions: SessionCatalog<JsonlSessionMetadata, JsonlSessionCreateOptions, JsonlSessionListOptions> = {
+		create: (options) => this.create(options),
+		open: (metadata) => this.open(metadata),
+		list: (options) => this.list(options),
+		delete: (metadata) => this.delete(metadata),
+		fork: (source, options, selection) => this.fork(source, options, selection),
+	};
+
+	readonly entries: SessionEntries<JsonlSessionMetadata> = {
+		readHead: (metadata) => this.readCollection(metadata, (entries) => entries.readHead()),
+		readEntry: (metadata, id) => this.readCollection(metadata, (entries) => entries.readEntry(id)),
+		readEntries: (metadata, options) => this.readCollection(metadata, (entries) => entries.readEntries(options)),
+		findEntriesOnBranch: (metadata, query) =>
+			this.readCollection(metadata, (entries) => entries.findEntriesOnBranch(query)),
+		readPathToRootOrCompaction: (metadata, leafId) =>
+			this.readCollection(metadata, (entries) => entries.readPathToRootOrCompaction(leafId)),
+		append: (metadata, entry) => this.appendEntry(metadata, entry),
+		getLabel: (metadata, id) => this.readCollection(metadata, (entries) => entries.getLabel(id)),
+		getName: (metadata) => this.readCollection(metadata, (entries) => entries.getName()),
+		getStats: (metadata) => this.readCollection(metadata, (entries) => entries.getStats()),
+	};
+
 	constructor(options: JsonlSessionStoreOptions) {
 		this.fs = options.fs;
 		this.sessionsRootInput = options.sessionsRoot;
@@ -219,7 +242,7 @@ class JsonlSessionStore
 		});
 	}
 
-	create(options: JsonlSessionCreateOptions): Promise<SessionReader<JsonlSessionMetadata>> {
+	private create(options: JsonlSessionCreateOptions): Promise<JsonlSessionMetadata> {
 		this.assertOpen();
 		const descriptor = createDocumentDescriptor(options);
 		return this.operations.enqueue(descriptor.operationKey, () =>
@@ -227,12 +250,12 @@ class JsonlSessionStore
 		);
 	}
 
-	load(metadata: JsonlSessionMetadata): Promise<SessionReader<JsonlSessionMetadata>> {
+	private open(metadata: JsonlSessionMetadata): Promise<JsonlSessionMetadata> {
 		this.assertOpen();
 		return this.operations.enqueue(this.operationKey(metadata), () => this.loadDocument(metadata));
 	}
 
-	private async loadDocument(metadata: JsonlSessionMetadata): Promise<SessionReader<JsonlSessionMetadata>> {
+	private async loadDocument(metadata: JsonlSessionMetadata): Promise<JsonlSessionMetadata> {
 		if (
 			!getFileSystemResultOrThrow(await this.fs.exists(metadata.path), `Failed to check session ${metadata.path}`)
 		) {
@@ -242,10 +265,10 @@ class JsonlSessionStore
 		const entries = this.entryCollectionsByPath.get(metadata.path);
 		if (entries) entries.replace(document.entries);
 		else this.entryCollectionsByPath.set(metadata.path, new SessionEntryCollection(document.entries));
-		return this.reader(document.metadata);
+		return document.metadata;
 	}
 
-	list(options: JsonlSessionListOptions = {}): Promise<JsonlSessionMetadata[]> {
+	private list(options: JsonlSessionListOptions = {}): Promise<JsonlSessionMetadata[]> {
 		this.assertOpen();
 		return this.operations.enqueueBarrier(() => this.listSessions(options));
 	}
@@ -265,7 +288,7 @@ class JsonlSessionStore
 		return sessions.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 	}
 
-	appendEntry(metadata: JsonlSessionMetadata, entry: SessionTreeEntry): Promise<void> {
+	private appendEntry(metadata: JsonlSessionMetadata, entry: SessionTreeEntry): Promise<void> {
 		this.assertOpen();
 		return this.operations.enqueue(this.operationKey(metadata), async () => {
 			if (
@@ -287,7 +310,7 @@ class JsonlSessionStore
 		});
 	}
 
-	delete(metadata: JsonlSessionMetadata): Promise<void> {
+	private delete(metadata: JsonlSessionMetadata): Promise<void> {
 		this.assertOpen();
 		return this.operations.enqueue(this.operationKey(metadata), async () => {
 			getFileSystemResultOrThrow(
@@ -299,11 +322,11 @@ class JsonlSessionStore
 		});
 	}
 
-	fork(
+	private fork(
 		source: JsonlSessionMetadata,
 		options: JsonlSessionCreateOptions,
 		selection: SessionForkSelection,
-	): Promise<SessionReader<JsonlSessionMetadata>> {
+	): Promise<JsonlSessionMetadata> {
 		this.assertOpen();
 		const descriptor = createDocumentDescriptor(options);
 		const sourceEntries = this.operations.enqueue(this.operationKey(source), async () => {
@@ -314,10 +337,7 @@ class JsonlSessionStore
 			const entries = this.entryCollectionsByPath.get(source.path);
 			if (entries) entries.replace(document.entries);
 			else this.entryCollectionsByPath.set(source.path, new SessionEntryCollection(document.entries));
-			return readSessionEntriesForFork(
-				createSessionEntryCollectionReader(document.metadata, this.entryCollectionsByPath.get(source.path)!),
-				selection,
-			);
+			return readSessionEntriesForFork(this.entryCollectionsByPath.get(source.path)!, selection);
 		});
 		return this.operations.enqueue(descriptor.operationKey, async () =>
 			this.createDocument(
@@ -352,7 +372,7 @@ class JsonlSessionStore
 		parentSessionPath: string | undefined,
 		metadata: Record<string, unknown> | undefined,
 		entries: readonly SessionTreeEntry[],
-	): Promise<SessionReader<JsonlSessionMetadata>> {
+	): Promise<JsonlSessionMetadata> {
 		const dir = await this.getSessionDir(options.cwd);
 		getFileSystemResultOrThrow(
 			await this.fs.createDir(dir, { recursive: true }),
@@ -378,40 +398,12 @@ class JsonlSessionStore
 		getFileSystemResultOrThrow(await this.fs.writeFile(path, content), `Failed to create session ${path}`);
 		this.entryCollectionsByPath.set(path, new SessionEntryCollection(entries));
 		this.operationKeysByPath.set(path, descriptor.operationKey);
-		return this.reader(metadataFromHeader(header, path));
+		return metadataFromHeader(header, path);
 	}
 
-	private reader(metadata: JsonlSessionMetadata): SessionReader<JsonlSessionMetadata> {
-		const operationKey = this.operationKey(metadata);
-		return {
-			metadata,
-			readHead: () => {
-				this.assertOpen();
-				return this.operations.enqueue(operationKey, () => this.entryCollection(metadata.path).readHead());
-			},
-			readEntry: (id) => {
-				this.assertOpen();
-				return this.operations.enqueue(operationKey, () => this.entryCollection(metadata.path).readEntry(id));
-			},
-			readEntries: (options) => {
-				this.assertOpen();
-				return this.operations.enqueue(operationKey, () =>
-					this.entryCollection(metadata.path).readEntries(options),
-				);
-			},
-			findEntriesOnBranch: (query) => {
-				this.assertOpen();
-				return this.operations.enqueue(operationKey, () =>
-					this.entryCollection(metadata.path).findEntriesOnBranch(query),
-				);
-			},
-			readPathToRootOrCompaction: (leafId) => {
-				this.assertOpen();
-				return this.operations.enqueue(operationKey, () =>
-					this.entryCollection(metadata.path).readPathToRootOrCompaction(leafId),
-				);
-			},
-		};
+	private readCollection<T>(metadata: JsonlSessionMetadata, read: (entries: SessionEntryCollection) => T): Promise<T> {
+		this.assertOpen();
+		return this.operations.enqueue(this.operationKey(metadata), () => read(this.entryCollection(metadata.path)));
 	}
 
 	private entryCollection(path: string): SessionEntryCollection {

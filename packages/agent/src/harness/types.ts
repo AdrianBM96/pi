@@ -555,15 +555,32 @@ export interface SessionHead {
 	leafId: string | null;
 }
 
-/** Canonical reads for one stored session. Its lifetime is owned by the containing {@link SessionStore}. */
-export interface SessionReader<TMetadata extends SessionMetadata = SessionMetadata> {
-	readonly metadata: TMetadata;
+export interface SessionCatalog<
+	TMetadata extends SessionMetadata = SessionMetadata,
+	TCreateOptions extends SessionCreateOptions = SessionCreateOptions,
+	TListOptions = void,
+> {
+	create(options: TCreateOptions): Promise<TMetadata>;
+	open(metadata: TMetadata): Promise<TMetadata>;
+	list(options?: TListOptions): Promise<TMetadata[]>;
+	delete(metadata: TMetadata): Promise<void>;
+	fork(source: TMetadata, options: TCreateOptions, selection: SessionForkSelection): Promise<TMetadata>;
+}
+
+export interface SessionEntries<TMetadata extends SessionMetadata = SessionMetadata> {
 	/** Rejects with `invalid_session` when a non-null active leaf does not reference a stored entry. */
-	readHead(): Promise<SessionHead>;
-	readEntry(id: string): Promise<SessionTreeEntry | undefined>;
-	readEntries(options?: SessionEntryCursorOptions): Promise<readonly SessionTreeEntry[]>;
-	findEntriesOnBranch(query: SessionBranchQuery & { start: string | null }): Promise<readonly SessionTreeEntry[]>;
-	readPathToRootOrCompaction(leafId: string | null): Promise<readonly SessionTreeEntry[]>;
+	readHead(metadata: TMetadata): Promise<SessionHead>;
+	readEntry(metadata: TMetadata, id: string): Promise<SessionTreeEntry | undefined>;
+	readEntries(metadata: TMetadata, options?: SessionEntryCursorOptions): Promise<readonly SessionTreeEntry[]>;
+	findEntriesOnBranch(
+		metadata: TMetadata,
+		query: SessionBranchQuery & { start: string | null },
+	): Promise<readonly SessionTreeEntry[]>;
+	readPathToRootOrCompaction(metadata: TMetadata, leafId: string | null): Promise<readonly SessionTreeEntry[]>;
+	append(metadata: TMetadata, entry: SessionTreeEntry): Promise<void>;
+	getLabel(metadata: TMetadata, id: string): Promise<string | undefined>;
+	getName(metadata: TMetadata): Promise<string | undefined>;
+	getStats(metadata: TMetadata): Promise<SessionStats>;
 }
 
 /** Owns persistence and resources shared by all sessions in a repository. */
@@ -572,13 +589,19 @@ export interface SessionStore<
 	TCreateOptions extends SessionCreateOptions = SessionCreateOptions,
 	TListOptions = void,
 > extends AsyncDisposable {
-	create(options: TCreateOptions): Promise<SessionReader<TMetadata>>;
-	load(metadata: TMetadata): Promise<SessionReader<TMetadata>>;
-	list(options?: TListOptions): Promise<TMetadata[]>;
-	appendEntry(metadata: TMetadata, entry: SessionTreeEntry): Promise<void>;
-	delete(metadata: TMetadata): Promise<void>;
-	fork(source: TMetadata, options: TCreateOptions, selection: SessionForkSelection): Promise<SessionReader<TMetadata>>;
+	readonly sessions: SessionCatalog<TMetadata, TCreateOptions, TListOptions>;
+	readonly entries: SessionEntries<TMetadata>;
 }
+
+export type SessionCommit<TMetadata extends SessionMetadata = SessionMetadata> =
+	| { kind: "session_created"; metadata: TMetadata }
+	| { kind: "session_forked"; metadata: TMetadata; source: TMetadata }
+	| { kind: "session_deleted"; metadata: TMetadata }
+	| { kind: "entry_appended"; metadata: TMetadata; entry: SessionTreeEntry };
+
+export type SessionCommitHandler<TMetadata extends SessionMetadata = SessionMetadata> = (
+	commit: SessionCommit<TMetadata>,
+) => Promise<void>;
 
 export interface JsonlSessionCreateOptions extends SessionCreateOptions {
 	cwd: string;

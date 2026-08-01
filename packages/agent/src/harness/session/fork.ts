@@ -1,5 +1,13 @@
-import type { SessionForkOptions, SessionForkSelection, SessionReader, SessionTreeEntry } from "../types.ts";
+import type { SessionForkOptions, SessionForkSelection, SessionTreeEntry } from "../types.ts";
 import { SessionError } from "../types.ts";
+
+type MaybePromise<T> = T | Promise<T>;
+
+export interface SessionForkEntrySource {
+	readEntry(id: string): MaybePromise<SessionTreeEntry | undefined>;
+	readEntries(): MaybePromise<readonly SessionTreeEntry[]>;
+	readPathToRootOrCompaction(leafId: string | null): MaybePromise<readonly SessionTreeEntry[]>;
+}
 
 export function createSessionForkSelection(options: SessionForkOptions): SessionForkSelection {
 	if (!options.entryId) return { kind: "all" };
@@ -9,7 +17,7 @@ export function createSessionForkSelection(options: SessionForkOptions): Session
 }
 
 export async function readSessionEntriesForFork(
-	reader: SessionReader,
+	reader: SessionForkEntrySource,
 	selection: SessionForkSelection,
 ): Promise<readonly SessionTreeEntry[]> {
 	if (selection.kind === "all") return reader.readEntries();

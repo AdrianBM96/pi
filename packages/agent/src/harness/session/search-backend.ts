@@ -1,15 +1,20 @@
 import type {
 	SessionMetadata,
-	SessionReader,
 	SessionSearch,
 	SessionSearchHit,
 	SessionSearchOptions,
+	SessionTreeEntry,
 } from "../types.ts";
 import { findSessionEntryMatches } from "./repository.ts";
 
 type SessionSearchSource<TMetadata extends SessionMetadata> = {
-	load(metadata: TMetadata): Promise<SessionReader<TMetadata>>;
-	list(): Promise<TMetadata[]>;
+	sessions: {
+		open(metadata: TMetadata): Promise<TMetadata>;
+		list(): Promise<TMetadata[]>;
+	};
+	entries: {
+		readEntries(metadata: TMetadata): Promise<readonly SessionTreeEntry[]>;
+	};
 };
 
 /** Searches canonical sessions directly and therefore has no index to maintain. */
@@ -22,11 +27,13 @@ class ScanningSessionSearch<TMetadata extends SessionMetadata = SessionMetadata>
 
 	async search(options: SessionSearchOptions): Promise<SessionSearchHit<TMetadata>[]> {
 		const hits: SessionSearchHit<TMetadata>[] = [];
-		for (const metadata of await this.source.list()) {
+		for (const metadata of await this.source.sessions.list()) {
 			const cwd = (metadata as { cwd?: unknown }).cwd;
 			if (options.cwd !== undefined && cwd !== options.cwd) continue;
-			const reader = await this.source.load(metadata);
-			hits.push(...findSessionEntryMatches(reader.metadata, await reader.readEntries(), options.text));
+			const canonical = await this.source.sessions.open(metadata);
+			hits.push(
+				...findSessionEntryMatches(canonical, await this.source.entries.readEntries(canonical), options.text),
+			);
 		}
 		return hits;
 	}

@@ -140,7 +140,7 @@ describe("JsonlSessionStore", () => {
 	it("enforces entry uniqueness and does not recreate deleted files", async () => {
 		const root = createTempDir();
 		const store = createJsonlSessionStore({ fs: new NodeExecutionEnv({ cwd: root }), sessionsRoot: root });
-		const snapshot = await store.create({ cwd: root, id: "session-1" });
+		const snapshot = await store.sessions.create({ cwd: root, id: "session-1" });
 		const entry = {
 			type: "message" as const,
 			id: "entry-1",
@@ -148,20 +148,18 @@ describe("JsonlSessionStore", () => {
 			timestamp: "2026-01-01T00:00:00.000Z",
 			message: createUserMessage("one"),
 		};
-		await store.appendEntry(snapshot.metadata, entry);
-		await expect(store.appendEntry(snapshot.metadata, entry)).rejects.toThrow("Entry entry-1 already exists");
-		await store.delete(snapshot.metadata);
-		await expect(store.appendEntry(snapshot.metadata, { ...entry, id: "entry-2" })).rejects.toThrow(
-			"Session not found",
-		);
-		expect(existsSync(snapshot.metadata.path)).toBe(false);
+		await store.entries.append(snapshot, entry);
+		await expect(store.entries.append(snapshot, entry)).rejects.toThrow("Entry entry-1 already exists");
+		await store.sessions.delete(snapshot);
+		await expect(store.entries.append(snapshot, { ...entry, id: "entry-2" })).rejects.toThrow("Session not found");
+		expect(existsSync(snapshot.path)).toBe(false);
 	});
 
 	it("scopes entry uniqueness to the session path", async () => {
 		const root = createTempDir();
 		const store = createJsonlSessionStore({ fs: new NodeExecutionEnv({ cwd: root }), sessionsRoot: root });
-		const first = await store.create({ cwd: "/tmp/first", id: "shared-session-id" });
-		const second = await store.create({ cwd: "/tmp/second", id: "shared-session-id" });
+		const first = await store.sessions.create({ cwd: "/tmp/first", id: "shared-session-id" });
+		const second = await store.sessions.create({ cwd: "/tmp/second", id: "shared-session-id" });
 		const entry = {
 			type: "message" as const,
 			id: "shared-entry-id",
@@ -170,8 +168,8 @@ describe("JsonlSessionStore", () => {
 			message: createUserMessage("one"),
 		};
 
-		await store.appendEntry(first.metadata, entry);
-		await expect(store.appendEntry(second.metadata, entry)).resolves.toBeUndefined();
+		await store.entries.append(first, entry);
+		await expect(store.entries.append(second, entry)).resolves.toBeUndefined();
 	});
 
 	it("rejects non-object header metadata", async () => {

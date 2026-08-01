@@ -2,17 +2,64 @@ import type {
 	SessionBranchQuery,
 	SessionEntryCursorOptions,
 	SessionHead,
-	SessionMetadata,
-	SessionReader,
+	SessionStats,
 	SessionTreeEntry,
 } from "../types.ts";
 import { SessionError } from "../types.ts";
+
+interface SessionEntryProjection {
+	name: string | undefined;
+	labelsById: Map<string, string>;
+	stats: SessionStats;
+}
+
+function createProjection(): SessionEntryProjection {
+	return {
+		name: undefined,
+		labelsById: new Map(),
+		stats: { messageCount: 0, cachedTokens: 0, uncachedTokens: 0, totalTokens: 0, costTotal: 0 },
+	};
+}
+
+function applyProjection(projection: SessionEntryProjection, entry: SessionTreeEntry): void {
+	if (entry.type === "session_info") {
+		projection.name = entry.name?.trim() || undefined;
+	} else if (entry.type === "label") {
+		const label = entry.label?.trim();
+		if (label) projection.labelsById.set(entry.targetId, label);
+		else projection.labelsById.delete(entry.targetId);
+	}
+	if (entry.type === "message") projection.stats.messageCount += 1;
+	const usage =
+		entry.type === "message"
+			? entry.message.role === "assistant"
+				? entry.message.usage
+				: undefined
+			: entry.type === "compaction" || entry.type === "branch_summary"
+				? entry.usage
+				: undefined;
+	if (
+		!usage ||
+		typeof usage.input !== "number" ||
+		typeof usage.output !== "number" ||
+		typeof usage.cacheRead !== "number" ||
+		typeof usage.cacheWrite !== "number" ||
+		typeof usage.cost?.total !== "number"
+	) {
+		return;
+	}
+	projection.stats.cachedTokens += usage.cacheRead;
+	projection.stats.uncachedTokens += usage.input + usage.cacheWrite;
+	projection.stats.totalTokens += usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+	projection.stats.costTotal += usage.cost.total;
+}
 
 /** Ordered entries and derived indexes for an array-backed session store. */
 export class SessionEntryCollection {
 	private entries: SessionTreeEntry[] = [];
 	private byId = new Map<string, SessionTreeEntry>();
 	private leafId: string | null = null;
+	private projection = createProjection();
 
 	constructor(entries: readonly SessionTreeEntry[] = []) {
 		this.replace(entries);
@@ -29,11 +76,13 @@ export class SessionEntryCollection {
 		this.entries.push(entry);
 		this.byId.set(entry.id, entry);
 		this.leafId = entry.type === "leaf" ? entry.targetId : entry.id;
+		applyProjection(this.projection, entry);
 	}
 
 	replace(entries: readonly SessionTreeEntry[]): void {
 		const nextEntries = [...entries];
 		const nextById = new Map<string, SessionTreeEntry>();
+		const nextProjection = createProjection();
 		let nextLeafId: string | null = null;
 		for (const entry of nextEntries) {
 			if (nextById.has(entry.id)) {
@@ -41,10 +90,12 @@ export class SessionEntryCollection {
 			}
 			nextById.set(entry.id, entry);
 			nextLeafId = entry.type === "leaf" ? entry.targetId : entry.id;
+			applyProjection(nextProjection, entry);
 		}
 		this.entries = nextEntries;
 		this.byId = nextById;
 		this.leafId = nextLeafId;
+		this.projection = nextProjection;
 	}
 
 	readHead(): SessionHead {
@@ -101,6 +152,18 @@ export class SessionEntryCollection {
 		return query.limit === undefined ? entries : entries.slice(0, query.limit);
 	}
 
+	getLabel(id: string): string | undefined {
+		return this.projection.labelsById.get(id);
+	}
+
+	getName(): string | undefined {
+		return this.projection.name;
+	}
+
+	getStats(): SessionStats {
+		return { ...this.projection.stats };
+	}
+
 	readPathToRootOrCompaction(requestedLeafId: string | null): readonly SessionTreeEntry[] {
 		if (requestedLeafId === null) return [];
 		const path: SessionTreeEntry[] = [];
@@ -121,28 +184,4 @@ export class SessionEntryCollection {
 		}
 		return path.reverse();
 	}
-}
-
-export function createSessionEntryCollectionReader<TMetadata extends SessionMetadata>(
-	metadata: TMetadata,
-	entries: SessionEntryCollection,
-): SessionReader<TMetadata> {
-	return {
-		metadata,
-		async readHead() {
-			return entries.readHead();
-		},
-		async readEntry(id) {
-			return entries.readEntry(id);
-		},
-		async readEntries(options) {
-			return entries.readEntries(options);
-		},
-		async findEntriesOnBranch(query) {
-			return entries.findEntriesOnBranch(query);
-		},
-		async readPathToRootOrCompaction(leafId) {
-			return entries.readPathToRootOrCompaction(leafId);
-		},
-	};
 }

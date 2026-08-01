@@ -1,6 +1,7 @@
 import type {
+	SessionCatalog,
+	SessionEntries,
 	SessionForkSelection,
-	SessionReader,
 	SessionStore,
 	SessionTreeEntry,
 } from "@earendil-works/pi-agent-core";
@@ -73,13 +74,35 @@ class SqliteSessionStore
 	private readonly operations = new SerialOperationQueue();
 	private readonly writers = new Map<string, SqliteSessionConnection>();
 
+	readonly sessions: SessionCatalog<SqliteSessionMetadata, SqliteSessionCreateOptions, SqliteSessionListOptions> = {
+		create: (options) => this.create(options),
+		open: (metadata) => this.open(metadata),
+		list: (options) => this.list(options),
+		delete: (metadata) => this.delete(metadata),
+		fork: (source, options, selection) => this.fork(source, options, selection),
+	};
+
+	readonly entries: SessionEntries<SqliteSessionMetadata> = {
+		readHead: (metadata) => this.read(metadata, (connection) => connection.readHead()),
+		readEntry: (metadata, id) => this.read(metadata, (connection) => connection.readEntry(id)),
+		readEntries: (metadata, options) => this.read(metadata, (connection) => connection.readEntries(options)),
+		findEntriesOnBranch: (metadata, query) =>
+			this.read(metadata, (connection) => connection.findEntriesOnBranch(query)),
+		readPathToRootOrCompaction: (metadata, leafId) =>
+			this.read(metadata, (connection) => connection.readPathToRootOrCompaction(leafId)),
+		append: (metadata, entry) => this.appendEntry(metadata, entry),
+		getLabel: (metadata, id) => this.read(metadata, (connection) => connection.getLabel(id)),
+		getName: (metadata) => this.read(metadata, (connection) => connection.getName()),
+		getStats: (metadata) => this.read(metadata, (connection) => connection.getStats()),
+	};
+
 	constructor(options: SqliteSessionStoreOptions) {
 		this.env = options.env;
 		this.sqlite = options.sqlite;
 		this.databasePathInput = options.databasePath;
 	}
 
-	create(options: SqliteSessionCreateOptions): Promise<SessionReader<SqliteSessionMetadata>> {
+	private create(options: SqliteSessionCreateOptions): Promise<SqliteSessionMetadata> {
 		this.assertOpen();
 		return this.operations.enqueue(async () => {
 			const db = await this.getDatabase();
@@ -94,16 +117,16 @@ class SqliteSessionStore
 			);
 			const metadata = connection.metadata;
 			this.writers.set(metadata.id, connection);
-			return this.reader(connection);
+			return metadata;
 		});
 	}
 
-	load(metadata: SqliteSessionMetadata): Promise<SessionReader<SqliteSessionMetadata>> {
+	private open(metadata: SqliteSessionMetadata): Promise<SqliteSessionMetadata> {
 		this.assertOpen();
 		return this.operations.enqueue(() => this.loadSession(metadata));
 	}
 
-	private async loadSession(metadata: SqliteSessionMetadata): Promise<SessionReader<SqliteSessionMetadata>> {
+	private async loadSession(metadata: SqliteSessionMetadata): Promise<SqliteSessionMetadata> {
 		if (
 			!getFileSystemResultOrThrow(await this.env.exists(metadata.path), `Failed to check database ${metadata.path}`)
 		) {
@@ -112,10 +135,10 @@ class SqliteSessionStore
 		const connection =
 			this.writers.get(metadata.id) ?? (await SqliteSessionConnection.open(await this.getDatabase(), metadata));
 		this.writers.set(metadata.id, connection);
-		return this.reader(connection);
+		return connection.metadata;
 	}
 
-	list(options: SqliteSessionListOptions = {}): Promise<SqliteSessionMetadata[]> {
+	private list(options: SqliteSessionListOptions = {}): Promise<SqliteSessionMetadata[]> {
 		this.assertOpen();
 		return this.operations.enqueue(() => this.listSessions(options));
 	}
@@ -138,7 +161,7 @@ class SqliteSessionStore
 		return rows.map((row) => rowToMetadata(row, path));
 	}
 
-	appendEntry(metadata: SqliteSessionMetadata, entry: SessionTreeEntry): Promise<void> {
+	private appendEntry(metadata: SqliteSessionMetadata, entry: SessionTreeEntry): Promise<void> {
 		this.assertOpen();
 		return this.operations.enqueue(async () => {
 			const connection =
@@ -148,7 +171,7 @@ class SqliteSessionStore
 		});
 	}
 
-	delete(metadata: SqliteSessionMetadata): Promise<void> {
+	private delete(metadata: SqliteSessionMetadata): Promise<void> {
 		this.assertOpen();
 		return this.operations.enqueue(async () => {
 			const db = await this.getDatabase();
@@ -166,11 +189,11 @@ class SqliteSessionStore
 		});
 	}
 
-	fork(
+	private fork(
 		source: SqliteSessionMetadata,
 		options: SqliteSessionCreateOptions,
 		selection: SessionForkSelection,
-	): Promise<SessionReader<SqliteSessionMetadata>> {
+	): Promise<SqliteSessionMetadata> {
 		this.assertOpen();
 		return this.operations.enqueue(async () => {
 			const db = await this.getDatabase();
@@ -189,7 +212,7 @@ class SqliteSessionStore
 			});
 			const metadata = connection.metadata;
 			this.writers.set(metadata.id, connection);
-			return this.reader(connection);
+			return metadata;
 		});
 	}
 
@@ -214,30 +237,17 @@ class SqliteSessionStore
 		if (this.disposed) throw new SessionError("storage", "SQLite session store is disposed");
 	}
 
-	private reader(connection: SqliteSessionConnection): SessionReader<SqliteSessionMetadata> {
-		return {
-			metadata: connection.metadata,
-			readHead: () => {
-				this.assertOpen();
-				return this.operations.enqueue(() => connection.readHead());
-			},
-			readEntry: (id) => {
-				this.assertOpen();
-				return this.operations.enqueue(() => connection.readEntry(id));
-			},
-			readEntries: (options) => {
-				this.assertOpen();
-				return this.operations.enqueue(() => connection.readEntries(options));
-			},
-			findEntriesOnBranch: (query) => {
-				this.assertOpen();
-				return this.operations.enqueue(() => connection.findEntriesOnBranch(query));
-			},
-			readPathToRootOrCompaction: (leafId) => {
-				this.assertOpen();
-				return this.operations.enqueue(() => connection.readPathToRootOrCompaction(leafId));
-			},
-		};
+	private read<T>(
+		metadata: SqliteSessionMetadata,
+		read: (connection: SqliteSessionConnection) => Promise<T>,
+	): Promise<T> {
+		this.assertOpen();
+		return this.operations.enqueue(async () => {
+			const connection =
+				this.writers.get(metadata.id) ?? (await SqliteSessionConnection.open(await this.getDatabase(), metadata));
+			this.writers.set(metadata.id, connection);
+			return read(connection);
+		});
 	}
 
 	private async getDatabasePath(): Promise<string> {

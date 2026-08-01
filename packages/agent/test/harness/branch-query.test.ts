@@ -104,8 +104,8 @@ describe("bounded session branch queries", () => {
 	it("rejects corrupt parent chains in array-backed stores", async () => {
 		const store = createInMemorySessionStore();
 		ownedStores.push(store);
-		const reader = await store.create({ id: "corrupt-memory" });
-		await store.appendEntry(reader.metadata, {
+		const metadata = await store.sessions.create({ id: "corrupt-memory" });
+		await store.entries.append(metadata, {
 			type: "message",
 			id: "orphan",
 			parentId: "missing-parent",
@@ -114,30 +114,34 @@ describe("bounded session branch queries", () => {
 		});
 
 		expect(
-			(await reader.findEntriesOnBranch({ start: "orphan", stopAtId: "orphan" })).map((entry) => entry.id),
+			(await store.entries.findEntriesOnBranch(metadata, { start: "orphan", stopAtId: "orphan" })).map(
+				(entry) => entry.id,
+			),
 		).toEqual(["orphan"]);
 		expect(
-			(await reader.findEntriesOnBranch({ start: "orphan", stopAtType: "message" })).map((entry) => entry.id),
+			(await store.entries.findEntriesOnBranch(metadata, { start: "orphan", stopAtType: "message" })).map(
+				(entry) => entry.id,
+			),
 		).toEqual(["orphan"]);
-		await expect(reader.findEntriesOnBranch({ start: "orphan" })).rejects.toMatchObject({
+		await expect(store.entries.findEntriesOnBranch(metadata, { start: "orphan" })).rejects.toMatchObject({
 			code: "invalid_session",
 			message: "Entry missing-parent not found",
 		});
-		await store.appendEntry(reader.metadata, {
+		await store.entries.append(metadata, {
 			type: "message",
 			id: "cycle-a",
 			parentId: "cycle-b",
 			timestamp: "2026-01-01T00:00:01.000Z",
 			message: createUserMessage("a"),
 		});
-		await store.appendEntry(reader.metadata, {
+		await store.entries.append(metadata, {
 			type: "message",
 			id: "cycle-b",
 			parentId: "cycle-a",
 			timestamp: "2026-01-01T00:00:02.000Z",
 			message: createUserMessage("b"),
 		});
-		await expect(reader.findEntriesOnBranch({ start: "cycle-b" })).rejects.toMatchObject({
+		await expect(store.entries.findEntriesOnBranch(metadata, { start: "cycle-b" })).rejects.toMatchObject({
 			code: "invalid_session",
 			message: "Session branch contains a cycle at cycle-b",
 		});

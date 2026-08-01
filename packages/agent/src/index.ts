@@ -47,6 +47,7 @@ export {
 	type ContextEntryTransform,
 	type CustomEntryContextMessageProjector,
 	defaultContextEntryTransform,
+	Session,
 	type SessionContextBuildOptions,
 	sessionEntryToContextMessages,
 } from "./harness/session/session.ts";

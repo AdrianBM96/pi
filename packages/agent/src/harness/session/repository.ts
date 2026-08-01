@@ -2,6 +2,7 @@ import { uuidv7 } from "@earendil-works/pi-ai";
 import {
 	type FileError,
 	type Result,
+	type SessionCommitHandler,
 	type SessionCreateOptions,
 	SessionError,
 	type SessionForkOptions,
@@ -12,7 +13,7 @@ import {
 	type SessionTreeEntry,
 } from "../types.ts";
 import { createSessionForkSelection } from "./fork.ts";
-import { createSessionFromReader, type Session, type SessionContextBuildOptions } from "./session.ts";
+import { createSession, type Session, type SessionContextBuildOptions } from "./session.ts";
 
 export function createSessionId(): string {
 	return uuidv7();
@@ -30,31 +31,38 @@ export class SessionRepository<
 	private readonly store: SessionStore<TMetadata, TCreateOptions, TListOptions>;
 	private readonly searchStore: SessionSearch<TMetadata> | null;
 	private readonly contextBuildOptions: SessionContextBuildOptions;
+	private readonly onCommit: SessionCommitHandler<TMetadata> | undefined;
 
 	constructor(options: {
 		store: SessionStore<TMetadata, TCreateOptions, TListOptions>;
 		search?: SessionSearch<TMetadata> | null;
 		contextBuildOptions?: SessionContextBuildOptions;
+		onCommit?: SessionCommitHandler<TMetadata>;
 	}) {
 		this.store = options.store;
 		this.searchStore = options.search ?? null;
 		this.contextBuildOptions = options.contextBuildOptions ?? {};
+		this.onCommit = options.onCommit;
 	}
 
 	async create(options: TCreateOptions): Promise<Session<TMetadata>> {
-		return createSessionFromReader(this.store, await this.store.create(options), this.contextBuildOptions);
+		const metadata = await this.store.sessions.create(options);
+		await this.onCommit?.({ kind: "session_created", metadata });
+		return createSession(this.store.entries, metadata, this.contextBuildOptions, this.onCommit);
 	}
 
 	async open(metadata: TMetadata): Promise<Session<TMetadata>> {
-		return createSessionFromReader(this.store, await this.store.load(metadata), this.contextBuildOptions);
+		const canonical = await this.store.sessions.open(metadata);
+		return createSession(this.store.entries, canonical, this.contextBuildOptions, this.onCommit);
 	}
 
 	async list(options?: TListOptions): Promise<TMetadata[]> {
-		return await this.store.list(options);
+		return await this.store.sessions.list(options);
 	}
 
 	async delete(metadata: TMetadata): Promise<void> {
-		await this.store.delete(metadata);
+		await this.store.sessions.delete(metadata);
+		await this.onCommit?.({ kind: "session_deleted", metadata });
 	}
 
 	async fork(source: TMetadata, options: SessionForkOptions & TCreateOptions): Promise<Session<TMetadata>> {
@@ -62,11 +70,9 @@ export class SessionRepository<
 		const createOptions = { ...options };
 		delete createOptions.entryId;
 		delete createOptions.position;
-		return createSessionFromReader(
-			this.store,
-			await this.store.fork(source, createOptions, selection),
-			this.contextBuildOptions,
-		);
+		const metadata = await this.store.sessions.fork(source, createOptions, selection);
+		await this.onCommit?.({ kind: "session_forked", metadata, source });
+		return createSession(this.store.entries, metadata, this.contextBuildOptions, this.onCommit);
 	}
 
 	async search(options: Parameters<SessionSearch<TMetadata>["search"]>[0]): Promise<SessionSearchHit<TMetadata>[]> {
@@ -82,6 +88,7 @@ export function createSessionRepository<
 	store: SessionStore<TMetadata, TCreateOptions, TListOptions>;
 	search?: SessionSearch<TMetadata> | null;
 	contextBuildOptions?: SessionContextBuildOptions;
+	onCommit?: SessionCommitHandler<TMetadata>;
 }): SessionRepository<TMetadata, TCreateOptions, TListOptions> {
 	return new SessionRepository(options);
 }

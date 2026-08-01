@@ -102,17 +102,16 @@ async function createBlockingSession(expectedWrites: number): Promise<{
 	const releaseWrites = deferred();
 	let writesStarted = 0;
 	const blockingStore: ReturnType<typeof createInMemorySessionStore> = {
-		create: (options) => source.create(options),
-		load: (metadata) => source.load(metadata),
-		list: (options) => source.list(options),
-		async appendEntry(metadata, entry) {
-			writesStarted++;
-			if (writesStarted === expectedWrites) allWritesStarted.resolve();
-			await releaseWrites.promise;
-			await source.appendEntry(metadata, entry);
+		sessions: source.sessions,
+		entries: {
+			...source.entries,
+			async append(metadata, entry) {
+				writesStarted++;
+				if (writesStarted === expectedWrites) allWritesStarted.resolve();
+				await releaseWrites.promise;
+				await source.entries.append(metadata, entry);
+			},
 		},
-		delete: (metadata) => source.delete(metadata),
-		fork: (metadata, options, selection) => source.fork(metadata, options, selection),
 		[Symbol.asyncDispose]: () => source[Symbol.asyncDispose](),
 	};
 	const session = await createSessionRepository({ store: blockingStore }).create({});
