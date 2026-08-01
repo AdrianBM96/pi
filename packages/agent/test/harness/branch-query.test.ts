@@ -101,7 +101,7 @@ describe("bounded session branch queries", () => {
 		).toEqual(expected.fullPath);
 	});
 
-	it("rejects corrupt parent chains in array-backed readers", async () => {
+	it("rejects corrupt parent chains in array-backed stores", async () => {
 		const store = createInMemorySessionStore();
 		ownedStores.push(store);
 		const reader = await store.create({ id: "corrupt-memory" });
@@ -154,6 +154,20 @@ describe("bounded session branch queries", () => {
 		expect(
 			(await reopened.findEntriesOnBranch({ start: expected.tail, order: "oldestFirst" })).map((entry) => entry.id),
 		).toEqual(expected.fullPath);
+	});
+
+	it("keeps existing JSONL readers synchronized when a session is reloaded", async () => {
+		const root = createTempDir();
+		const store = createJsonlSessionStore({ fs: new NodeExecutionEnv({ cwd: root }), sessionsRoot: root });
+		ownedStores.push(store);
+		const repo = createSessionRepository({ store });
+		const original = await repo.create({ id: "jsonl-reload", cwd: root });
+		await original.appendMessage(createUserMessage("root"));
+
+		const reopened = await repo.open(await original.getMetadata());
+		const appendedId = await reopened.appendMessage(createAssistantMessage("after reload"));
+
+		expect(await original.getEntry(appendedId)).toMatchObject({ id: appendedId });
 	});
 
 	it("does not decode SQLite branch entries outside query bounds", async () => {
