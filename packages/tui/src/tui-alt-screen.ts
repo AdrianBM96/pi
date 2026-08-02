@@ -150,7 +150,6 @@ export class TuiAltScreen extends TuiMainScreen implements ViewportTUI {
 		if (this.layoutRoot === component) return;
 		this.layoutRoot = component;
 		this.currentLayout = undefined;
-		this.invalidate();
 		this.requestRender();
 	}
 

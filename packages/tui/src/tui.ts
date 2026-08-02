@@ -678,9 +678,14 @@ export abstract class TuiBase extends Container implements TUI {
 		for (const overlay of this.overlayStack) overlay.component.invalidate?.();
 	}
 
-	private activateRenderer(startTerminal: () => void): void {
+	private activateRenderer(resumeTerminal = false): void {
 		this.beforeTerminalStart();
-		startTerminal();
+		if (resumeTerminal) this.terminal.resumeRenderer!();
+		else
+			this.terminal.start(
+				(data) => this.handleTerminalInput(data),
+				() => this.requestRender(),
+			);
 		this.afterTerminalStart();
 		this.terminal.hideCursor();
 		if (this.terminalColorSchemeNotificationsEnabled) this.terminal.write("\x1b[?2031h");
@@ -688,22 +693,18 @@ export abstract class TuiBase extends Container implements TUI {
 		this.requestRender();
 	}
 
-	private deactivateRenderer(stopTerminal: () => void): void {
+	private deactivateRenderer(suspendTerminal = false): void {
 		if (this.terminalColorSchemeNotificationsEnabled) this.terminal.write("\x1b[?2031l");
 		this.beforeTerminalStop();
 		this.terminal.showCursor();
-		stopTerminal();
+		if (suspendTerminal) this.terminal.suspendRenderer!();
+		else this.terminal.stop();
 		this.afterTerminalStop();
 	}
 
 	start(): void {
 		this.stopped = false;
-		this.activateRenderer(() => {
-			this.terminal.start(
-				(data) => this.handleTerminalInput(data),
-				() => this.requestRender(),
-			);
-		});
+		this.activateRenderer();
 	}
 
 	addInputListener(listener: TuiInputListener): () => void {
@@ -746,60 +747,43 @@ export abstract class TuiBase extends Container implements TUI {
 
 	/** Change renderer-specific screen modes while retaining this TUI instance. */
 	protected switchRenderer(switchMode: () => void, resumeTerminal = true): void {
-		const canSuspend = this.terminal.suspendRenderer !== undefined && this.terminal.resumeRenderer !== undefined;
+		const suspendTerminal = this.terminal.suspendRenderer !== undefined && this.terminal.resumeRenderer !== undefined;
 		this.rendererSwitchStop = true;
 		try {
-			this.deactivateRenderer(() => {
-				if (canSuspend) this.terminal.suspendRenderer?.();
-				else this.terminal.stop();
-			});
+			this.deactivateRenderer(suspendTerminal);
 		} finally {
 			this.rendererSwitchStop = false;
 		}
 
 		switchMode();
-		if (!resumeTerminal && canSuspend) return;
-
-		this.activateRenderer(() => {
-			if (canSuspend) {
-				this.terminal.resumeRenderer?.();
-			} else {
-				this.terminal.start(
-					(data) => this.handleTerminalInput(data),
-					() => this.requestRender(),
-				);
-			}
-		});
+		if (!resumeTerminal && suspendTerminal) return;
+		this.activateRenderer(suspendTerminal);
 	}
 
-	protected renderImmediately(force = false, render: () => void = () => this.doRender()): void {
-		if (force) this.resetRenderState();
+	private clearPendingRender(): void {
 		this.renderRequested = false;
-		if (this.renderTimer) {
-			clearTimeout(this.renderTimer);
-			this.renderTimer = undefined;
-		}
+		if (!this.renderTimer) return;
+		clearTimeout(this.renderTimer);
+		this.renderTimer = undefined;
+	}
+
+	protected renderImmediately(force = false): void {
+		if (force) this.resetRenderState();
+		this.clearPendingRender();
 		this.lastRenderAt = performance.now();
-		render();
+		this.doRender();
 	}
 
 	stop(): void {
 		this.stopped = true;
-		this.renderRequested = false;
-		if (this.renderTimer) {
-			clearTimeout(this.renderTimer);
-			this.renderTimer = undefined;
-		}
-		this.deactivateRenderer(() => this.terminal.stop());
+		this.clearPendingRender();
+		this.deactivateRenderer();
 	}
 
 	requestRender(force = false): void {
 		if (force) {
 			this.resetRenderState();
-			if (this.renderTimer) {
-				clearTimeout(this.renderTimer);
-				this.renderTimer = undefined;
-			}
+			this.clearPendingRender();
 			this.renderRequested = true;
 			process.nextTick(() => {
 				if (this.stopped || !this.renderRequested) {

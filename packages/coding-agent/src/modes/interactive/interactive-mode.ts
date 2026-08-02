@@ -20,6 +20,7 @@ import type {
 	OverlayHandle,
 	OverlayOptions,
 	SlashCommand,
+	Terminal,
 } from "@earendil-works/pi-tui";
 import * as TuiLayouts from "@earendil-works/pi-tui";
 import {
@@ -31,7 +32,9 @@ import {
 	hyperlink,
 	Markdown,
 	matchesKey,
+	ProcessTerminal,
 	Spacer,
+	SwitchableTui,
 	setKeybindings,
 	Text,
 	TruncatedText,
@@ -98,6 +101,7 @@ import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelo
 import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
 import { parseGitUrl } from "../../utils/git.ts";
+import { openBrowser } from "../../utils/open-browser.ts";
 import { getCwdRelativePath } from "../../utils/paths.ts";
 import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
@@ -145,7 +149,6 @@ import { TrustSelectorComponent } from "./components/trust-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
 import { editInExternalEditor } from "./external-editor.ts";
-import { createInteractiveTui, type InteractiveTui } from "./interactive-tui.ts";
 import { getModelSearchText } from "./model-search.ts";
 import {
 	getAvailableThemes,
@@ -325,11 +328,23 @@ export interface InteractiveModeOptions {
 	uiMode?: UiMode;
 }
 
-export { createInteractiveTui };
+export function createInteractiveTui(options: {
+	uiMode: UiMode;
+	showHardwareCursor: boolean;
+	logDirectory: string;
+	terminal?: Terminal;
+}): SwitchableTui {
+	return new SwitchableTui(options.terminal ?? new ProcessTerminal(), {
+		mode: options.uiMode === "fullscreen" ? "alternate" : "main",
+		showHardwareCursor: options.showHardwareCursor,
+		logDirectory: options.logDirectory,
+		altScreen: { openUrl: openBrowser },
+	});
+}
 
 export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
-	private ui: InteractiveTui;
+	private ui: SwitchableTui;
 	private loadedResourcesContainer: Container;
 	private chatContainer: Container;
 	private documentContainer: Container;
@@ -453,6 +468,9 @@ export class InteractiveMode {
 	}
 	private get settingsManager() {
 		return this.session.settingsManager;
+	}
+	private get uiMode(): UiMode {
+		return this.ui.mode === "alternate" ? "fullscreen" : "regular";
 	}
 
 	constructor(runtimeHost: AgentSessionRuntime, options: InteractiveModeOptions = {}) {
@@ -747,13 +765,7 @@ export class InteractiveMode {
 				{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
 			]),
 		);
-		this.ui.addChild(this.documentContainer);
-		this.ui.addChild(this.pendingMessagesContainer);
-		this.ui.addChild(this.statusContainer);
-		this.ui.addChild(this.widgetContainerAbove);
-		this.ui.addChild(this.editorContainer);
-		this.ui.addChild(this.widgetContainerBelow);
-		this.ui.addChild(this.footerContainer);
+		for (const component of [this.documentContainer, ...dock.children]) this.ui.addChild(component);
 		this.ui.setFocus(this.editor);
 
 		this.setupKeyHandlers();
@@ -1915,7 +1927,7 @@ export class InteractiveMode {
 		this.activeStatusIndicator?.dispose();
 		this.activeStatusIndicator = undefined;
 		this.statusContainer.clear();
-		if (hadActiveStatusIndicator && this.ui.uiMode === "regular" && this.ui.getClearOnShrink()) {
+		if (hadActiveStatusIndicator && this.uiMode === "regular" && this.ui.getClearOnShrink()) {
 			this.statusContainer.addChild(this.idleStatus);
 		}
 	}
@@ -4189,8 +4201,7 @@ export class InteractiveMode {
 
 	private showSettingsSelector(): void {
 		this.showSelector((done) => {
-			let selector: SettingsSelectorComponent | undefined;
-			selector = new SettingsSelectorComponent(
+			const selector = new SettingsSelectorComponent(
 				{
 					autoCompact: this.session.autoCompactionEnabled,
 					showImages: this.settingsManager.getShowImages(),
@@ -4221,7 +4232,7 @@ export class InteractiveMode {
 					quietStartup: this.settingsManager.getQuietStartup(),
 					clearOnShrink: this.settingsManager.getClearOnShrink(),
 					showTerminalProgress: this.settingsManager.getShowTerminalProgress(),
-					uiMode: this.ui.uiMode,
+					uiMode: this.uiMode,
 					fullscreenScrollbar: this.settingsManager.getFullscreenScrollbar(),
 					warnings: this.settingsManager.getWarnings(),
 				},
@@ -4364,8 +4375,8 @@ export class InteractiveMode {
 						this.settingsManager.setShowTerminalProgress(enabled);
 					},
 					onUiModeChange: (mode) => {
-						if (!this.ui.setUiMode(mode)) {
-							selector?.getSettingsList().updateValue("ui-mode", this.ui.uiMode);
+						if (!this.ui.setMode(mode === "fullscreen" ? "alternate" : "main")) {
+							selector.getSettingsList().updateValue("ui-mode", this.uiMode);
 							this.showStatus("Close active overlays before changing UI mode");
 							return;
 						}

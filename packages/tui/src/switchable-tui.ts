@@ -16,7 +16,7 @@ export class SwitchableTui extends TuiAltScreen {
 	private currentMode: TuiScreenMode;
 	private started = false;
 	private renderedMainScreen: boolean;
-	private mainViewportDirty = false;
+	private mainNeedsFullRedraw = false;
 
 	constructor(terminal: Terminal, options: SwitchableTuiOptions) {
 		super(terminal, options.showHardwareCursor, options.logDirectory, options.altScreen);
@@ -32,12 +32,6 @@ export class SwitchableTui extends TuiAltScreen {
 		return this.currentMode;
 	}
 
-	private renderMainScreen(): void {
-		this.renderedMainScreen = true;
-		this.renderMainScreenImmediately(this.mainViewportDirty);
-		this.mainViewportDirty = false;
-	}
-
 	setMode(mode: TuiScreenMode): boolean {
 		if (mode === this.currentMode) return true;
 		if (this.hasOverlayEntries) return false;
@@ -48,11 +42,16 @@ export class SwitchableTui extends TuiAltScreen {
 			return true;
 		}
 
+		const forceMainRedraw = mode === "main" && this.mainNeedsFullRedraw;
 		this.switchRenderer(() => {
 			this.currentMode = mode;
 		});
 		this.invalidate();
-		if (mode === "main") this.renderMainScreen();
+		if (mode === "main") {
+			this.renderedMainScreen = true;
+			if (forceMainRedraw) this.requestRender(true);
+			this.mainNeedsFullRedraw = false;
+		}
 		return true;
 	}
 
@@ -60,7 +59,10 @@ export class SwitchableTui extends TuiAltScreen {
 		if (this.started) return;
 		super.start();
 		this.started = true;
-		if (this.currentMode === "main" && this.mainViewportDirty) this.renderMainScreen();
+		if (this.currentMode === "main" && this.mainNeedsFullRedraw) {
+			this.requestRender(true);
+			this.mainNeedsFullRedraw = false;
+		}
 	}
 
 	override stop(): void {
@@ -72,16 +74,13 @@ export class SwitchableTui extends TuiAltScreen {
 					this.currentMode = "main";
 				}, false);
 				this.invalidate();
-				this.renderMainScreen();
+				this.renderImmediately(this.mainNeedsFullRedraw);
 			}
+			super.stop();
 		} finally {
-			try {
-				super.stop();
-			} finally {
-				this.currentMode = mode;
-				if (mode === "alternate" && this.renderedMainScreen) this.mainViewportDirty = true;
-				this.started = false;
-			}
+			this.currentMode = mode;
+			if (mode === "alternate" && this.renderedMainScreen) this.mainNeedsFullRedraw = true;
+			this.started = false;
 		}
 	}
 }
