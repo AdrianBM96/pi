@@ -66,24 +66,22 @@ describe("experimental client/server CLI parser", () => {
 	] as const)("rejects unsupported input %j", (argv, message) => {
 		const result = parseExperimentalCliArgs(argv);
 		expect(result.args).toBeUndefined();
-		expect(result.errors.some((error) => error.includes(message))).toBe(true);
+		expect(result.errors).toContainEqual(expect.stringContaining(message));
 	});
 
-	test("allows server model defaults but rejects client-only session selection and prompts", () => {
-		const result = parseExperimentalCliArgs([
-			"--server",
-			"/tmp/pi.sock",
-			"--provider",
-			"faux",
-			"--model",
-			"one",
-			"--session",
-			"old",
-			"hello",
-		]);
+	test("allows model defaults in server mode", () => {
+		const result = parseExperimentalCliArgs(["--server", "/tmp/pi.sock", "--provider", "faux", "--model", "one"]);
+		expect(result.errors).toEqual([]);
+		expect(result.args).toMatchObject({ role: "server", provider: "faux", model: "one" });
+	});
+
+	test("rejects client-only session selection and prompts in server mode", () => {
+		const result = parseExperimentalCliArgs(["--server", "/tmp/pi.sock", "--session", "old", "hello"]);
 		expect(result.args).toBeUndefined();
-		expect(result.errors).toContain("An initial prompt is only valid for client or combined roles");
-		expect(result.errors).toContain("--session is only valid for client or combined roles");
+		expect(result.errors).toEqual([
+			"--session is only valid for client or combined roles",
+			"An initial prompt is only valid for client or combined roles",
+		]);
 	});
 
 	test("validates socket paths, required values, and thinking levels", () => {

@@ -107,6 +107,12 @@ describe("experimental client view model", () => {
 				timestamp: 2,
 			},
 		});
+		expect(model.view()?.transcript.at(-1)).toMatchObject({
+			id: "tool-call-1",
+			role: "tool",
+			status: "running",
+			content: [],
+		});
 		model.applyProgress({
 			type: "item_updated",
 			item: {

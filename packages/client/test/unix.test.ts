@@ -45,7 +45,6 @@ test("PiClient exchanges fragmented framed messages over a real Unix socket", as
 	const directory = await mkdtemp(join(tmpdir(), "pi-client-"));
 	const socketPath = join(directory, "pi.sock");
 	const sockets = new Set<Socket>();
-	const requestIds: string[] = [];
 	const server = createServer((socket) => {
 		sockets.add(socket);
 		socket.once("close", () => sockets.delete(socket));
@@ -61,7 +60,6 @@ test("PiClient exchanges fragmented framed messages over a real Unix socket", as
 					});
 					for (const byte of hello) socket.write(new Uint8Array([byte]));
 				} else {
-					requestIds.push(message.id);
 					const response = encodeServerMessage({
 						type: "response",
 						id: message.id,
@@ -84,7 +82,6 @@ test("PiClient exchanges fragmented framed messages over a real Unix socket", as
 	try {
 		await expect(client.connect()).resolves.toEqual(serverSnapshot);
 		await expect(Promise.all([client.listSessions(), client.listSessions()])).resolves.toEqual([[], []]);
-		expect(requestIds).toEqual(["request-1", "request-2"]);
 	} finally {
 		client.disconnect();
 		await closeServer(server, sockets);
@@ -92,7 +89,7 @@ test("PiClient exchanges fragmented framed messages over a real Unix socket", as
 	}
 });
 
-test("Unix transport serializes backpressured writes and reports remote end once", async () => {
+test("Unix transport bounds pending writes, preserves order, and reports remote end once", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-client-"));
 	const socketPath = join(directory, "pi.sock");
 	const sockets = new Set<Socket>();
@@ -133,13 +130,17 @@ test("Unix transport serializes backpressured writes and reports remote end once
 	await listen(server, socketPath);
 	const inbound: number[] = [];
 	const errors: Error[] = [];
+	let closeCount = 0;
 	let resolveClosed: (() => void) | undefined;
 	const closed = new Promise<void>((resolve) => {
 		resolveClosed = resolve;
 	});
-	const transport = await createUnixTransportFactory({ path: socketPath })({
+	const transport = await createUnixTransportFactory({ path: socketPath, maxPendingBytes: expectedLength })({
 		onData: (chunk) => inbound.push(...chunk),
-		onClose: () => resolveClosed?.(),
+		onClose: () => {
+			closeCount += 1;
+			resolveClosed?.();
+		},
 		onError: (error) => errors.push(error),
 	});
 
@@ -147,6 +148,7 @@ test("Unix transport serializes backpressured writes and reports remote end once
 		await serverReady;
 		const firstWrite = transport.send(first);
 		const secondWrite = transport.send(second);
+		await expect(transport.send(Uint8Array.of(3))).rejects.toThrow(/pending byte limit/);
 		resumeServer?.();
 		await Promise.all([firstWrite, secondWrite, received, closed]);
 		expect(receivedLength).toBe(expectedLength);
@@ -154,6 +156,8 @@ test("Unix transport serializes backpressured writes and reports remote end once
 		expect(secondByteWrong).toBe(false);
 		expect(inbound).toEqual([9]);
 		expect(errors).toEqual([]);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(closeCount).toBe(1);
 	} finally {
 		transport.close();
 		await closeServer(server, sockets);

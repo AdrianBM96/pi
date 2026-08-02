@@ -18,6 +18,31 @@ async function makeSocketPath(nested = false): Promise<string> {
 	return nested ? join(directory, "p", "n", "server.sock") : join(directory, "server.sock");
 }
 
+async function waitForChildMessage(child: ChildProcess): Promise<void> {
+	await new Promise<void>((resolve, reject) => {
+		const cleanup = (): void => {
+			child.off("message", onMessage);
+			child.off("error", onError);
+			child.off("exit", onExit);
+		};
+		const onMessage = (): void => {
+			cleanup();
+			resolve();
+		};
+		const onError = (error: Error): void => {
+			cleanup();
+			reject(error);
+		};
+		const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+			cleanup();
+			reject(new Error(`Stale-socket fixture exited before readiness: code=${code}, signal=${signal}`));
+		};
+		child.once("message", onMessage);
+		child.once("error", onError);
+		child.once("exit", onExit);
+	});
+}
+
 function makeServer(path: string): PiServer {
 	const server = new PiServer(new ConformanceBackend(), { token: TEST_TOKEN, unix: { path } });
 	servers.add(server);
@@ -98,20 +123,16 @@ describe("Unix listener filesystem lifecycle", () => {
 			stdio: ["ignore", "ignore", "inherit", "ipc"],
 		});
 		children.add(child);
-		await once(child, "message");
-		const staleIdentity = await lstat(path);
-		expect(staleIdentity.isSocket()).toBe(true);
+		await waitForChildMessage(child);
+		expect((await lstat(path)).isSocket()).toBe(true);
 		child.kill("SIGKILL");
 		await once(child, "exit");
 		children.delete(child);
 
 		const server = makeServer(path);
 		await server.start();
-		const liveIdentity = await lstat(path);
-		expect(liveIdentity.isSocket()).toBe(true);
-		expect({ dev: liveIdentity.dev, ino: liveIdentity.ino }).not.toEqual({
-			dev: staleIdentity.dev,
-			ino: staleIdentity.ino,
-		});
+		const client = await connectUnix(path);
+		clients.add(client);
+		expect(await client.hello()).toMatchObject({ type: "hello" });
 	});
 });

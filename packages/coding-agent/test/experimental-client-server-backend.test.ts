@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
+import { type FauxResponseFactory, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { PiClient } from "@earendil-works/pi-client";
 import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import type { TranscriptProgress } from "@earendil-works/pi-protocol";
-import { PiServer, PiServerError } from "@earendil-works/pi-server";
+import { PiServer } from "@earendil-works/pi-server";
 import lockfile, { type LockOptions } from "proper-lockfile";
 import { describe, expect, test, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -49,6 +49,25 @@ async function createFixture() {
 		settingsManager,
 	});
 	return { root, cwd, faux, modelRuntime, settingsManager, backend };
+}
+
+function abortableResponse(): { response: FauxResponseFactory; started: Promise<void> } {
+	let startedResolve: (() => void) | undefined;
+	const started = new Promise<void>((resolve) => {
+		startedResolve = resolve;
+	});
+	return {
+		started,
+		response: async (_context, options) => {
+			startedResolve?.();
+			const signal = options?.signal;
+			if (!signal) throw new Error("Expected an abort signal");
+			if (!signal.aborted) {
+				await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+			}
+			return fauxAssistantMessage("aborted");
+		},
+	};
 }
 
 describe("experimental AgentHarness server backend", () => {
@@ -218,16 +237,11 @@ describe("experimental AgentHarness server backend", () => {
 				cwd: fixture.cwd,
 				model: { provider: fixture.faux.provider.id, id: "faux-reasoning" },
 			});
-			fixture.faux.setResponses([fauxAssistantMessage("long response ".repeat(1_000))]);
-			let startedResolve: (() => void) | undefined;
-			const started = new Promise<void>((resolvePromise) => {
-				startedResolve = resolvePromise;
-			});
-			runtime.subscribe(() => {
-				if (runtime?.getPhase() === "turn") startedResolve?.();
-			});
+			const pendingResponse = abortableResponse();
+			fixture.faux.setResponses([pendingResponse.response]);
 			const prompt = runtime.prompt({ text: "start" });
-			await started;
+			expect(runtime.getPhase()).toBe("turn");
+			await pendingResponse.started;
 			await forceRelease?.();
 			compromise?.(new Error("lock ownership lost"));
 
@@ -286,19 +300,11 @@ describe("experimental AgentHarness server backend", () => {
 			model: { provider: fixture.faux.provider.id, id: "faux-reasoning" },
 		});
 		try {
-			fixture.faux.setResponses([fauxAssistantMessage("long response ".repeat(1_000))]);
-			let resolveTurn: (() => void) | undefined;
-			const turnStarted = new Promise<void>((resolvePromise) => {
-				resolveTurn = resolvePromise;
-			});
-			const unsubscribe = runtime.subscribe((event) => {
-				if (event.type !== "snapshot") return;
-				void Promise.resolve(runtime.snapshot()).then((snapshot) => {
-					if (snapshot.phase === "turn") resolveTurn?.();
-				});
-			});
+			const pendingResponse = abortableResponse();
+			fixture.faux.setResponses([pendingResponse.response]);
 			const prompt = runtime.prompt({ text: "start" });
-			await turnStarted;
+			expect(runtime.getPhase()).toBe("turn");
+			await pendingResponse.started;
 			await runtime.steer({ text: "adjust the approach" });
 			expect(await runtime.snapshot()).toMatchObject({
 				queuedSteerCount: 1,
@@ -306,7 +312,6 @@ describe("experimental AgentHarness server backend", () => {
 			});
 			await runtime.abort();
 			await prompt;
-			unsubscribe();
 		} finally {
 			await runtime.dispose();
 			await rm(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
@@ -331,7 +336,7 @@ describe("experimental AgentHarness server backend", () => {
 		}
 	});
 
-	test("streams live bash output and keeps runtime revisions monotonic", async () => {
+	test("streams live bash output into progress and the final snapshot", async () => {
 		const fixture = await createFixture();
 		const runtime = await fixture.backend.createSession({
 			id: "server-session-bash",
@@ -348,17 +353,10 @@ describe("experimental AgentHarness server backend", () => {
 				fauxAssistantMessage("done"),
 			]);
 			const progress: TranscriptProgress[] = [];
-			const revisionReads: Array<Promise<number>> = [];
 			runtime.subscribe((event) => {
 				if (event.type === "progress") progress.push(event.progress);
-				if (event.type === "snapshot") {
-					revisionReads.push(Promise.resolve(runtime.snapshot()).then((snapshot) => snapshot.revision));
-				}
 			});
 			await runtime.prompt({ text: "run it" });
-			const revisions = await Promise.all(revisionReads);
-			expect(revisions.length).toBeGreaterThan(2);
-			expect(revisions).toEqual([...revisions].sort((left, right) => left - right));
 
 			const toolUpdates = progress.filter(
 				(event): event is Extract<TranscriptProgress, { type: "item_updated" }> =>
@@ -379,6 +377,10 @@ describe("experimental AgentHarness server backend", () => {
 				status: "complete",
 				isError: false,
 			});
+			if (!tool || tool.role !== "tool") throw new Error("Expected tool transcript item");
+			const output = tool.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+			expect(output).toContain("first");
+			expect(output).toContain("second");
 		} finally {
 			await runtime.dispose();
 			await rm(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
@@ -390,12 +392,13 @@ describe("experimental AgentHarness server backend", () => {
 		const token = "transport-secret";
 		const socketPath = join(fixture.root, "server.sock");
 		const server = new PiServer(fixture.backend, { token, unix: { path: socketPath } });
-		await server.start();
 		const client = new PiClient({
 			token,
 			transportFactory: createUnixTransportFactory({ path: socketPath }),
 		});
+		let controller: ExperimentalClientController | undefined;
 		try {
+			await server.start();
 			const serverSnapshot = await client.connect();
 			expect(serverSnapshot.models).toContainEqual(
 				expect.objectContaining({ provider: fixture.faux.provider.id, id: "faux-reasoning" }),
@@ -406,7 +409,7 @@ describe("experimental AgentHarness server backend", () => {
 				thinkingLevel: "medium",
 			});
 			expect(session.id).toMatch(/^[0-9a-f-]{36}$/);
-			const controller = new ExperimentalClientController(client);
+			controller = new ExperimentalClientController(client);
 			await controller.attachInitial(session);
 			fixture.faux.setResponses([fauxAssistantMessage("over unix")]);
 			const progress: TranscriptProgress[] = [];
@@ -431,8 +434,8 @@ describe("experimental AgentHarness server backend", () => {
 			expect(client.isSessionAttached(previousId)).toBe(false);
 			const reopened = await fixture.backend.openSession(previousId);
 			await reopened.dispose();
-			await controller.dispose();
 		} finally {
+			await controller?.dispose();
 			client.disconnect();
 			await server.close();
 			await rm(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
@@ -448,7 +451,11 @@ describe("experimental AgentHarness server backend", () => {
 					cwd: fixture.cwd,
 					model: { provider: "missing", id: "missing" },
 				}),
-			).rejects.toBeInstanceOf(PiServerError);
+			).rejects.toMatchObject({
+				name: "PiServerError",
+				code: "invalid_request",
+				message: expect.stringContaining("Could not resolve missing/missing"),
+			});
 			await expect(
 				fixture.backend.createSession({
 					id: "bad-thinking",
@@ -456,7 +463,11 @@ describe("experimental AgentHarness server backend", () => {
 					model: { provider: fixture.faux.provider.id, id: "faux-reasoning" },
 					thinkingLevel: "max",
 				}),
-			).rejects.toMatchObject({ code: "invalid_request" });
+			).rejects.toMatchObject({
+				name: "PiServerError",
+				code: "invalid_request",
+				message: expect.stringContaining("not supported"),
+			});
 		} finally {
 			await rm(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 		}

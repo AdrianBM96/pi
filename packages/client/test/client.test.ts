@@ -18,7 +18,6 @@ import {
 	type ByteTransportHandlers,
 	PiClient,
 	PiDisconnectedError,
-	PiError,
 	PiSessionDetachedError,
 } from "../src/index.ts";
 
@@ -439,11 +438,15 @@ describe("PiClient", () => {
 	test("reports truncated framing when the transport closes", async () => {
 		const server = new MemoryByteServer();
 		const client = await connectClient(server);
+		const pending = client.listSessions();
 		server.sendRaw(new Uint8Array([0, 0, 0, 2, 1]));
 		server.close();
 
+		await expect(pending).rejects.toMatchObject({
+			name: "ProtocolValidationError",
+			message: expect.stringMatching(/truncated/i),
+		});
 		expect(client.connectionState).toBe("disconnected");
-		await expect(client.listSessions()).rejects.toBeInstanceOf(PiDisconnectedError);
 	});
 
 	test("rejects a mismatched response instead of leaving its request pending", async () => {
@@ -451,14 +454,18 @@ describe("PiClient", () => {
 		const client = await connectClient(server);
 		const requests = collectRequests(server);
 		const listed = client.listSessions();
+		expect(requests).toMatchObject([{ request: { command: "list" } }]);
 		server.send({
 			type: "response",
-			id: requests[0]?.id ?? "missing",
+			id: requests[0]!.id,
 			ok: true,
 			result: { command: "attach", session: sessionSnapshot("session-1") },
 		});
 
-		await expect(listed).rejects.toBeInstanceOf(ProtocolValidationError);
+		await expect(listed).rejects.toMatchObject({
+			name: "ProtocolValidationError",
+			message: "Response command attach does not match list",
+		});
 		expect(client.connectionState).toBe("disconnected");
 	});
 
@@ -584,7 +591,6 @@ describe("PiClient", () => {
 			ok: false,
 			error: { code: "session_locked", message: "Already attached" },
 		});
-		await expect(attaching).rejects.toBeInstanceOf(PiError);
-		await expect(attaching).rejects.toMatchObject({ code: "session_locked" });
+		await expect(attaching).rejects.toMatchObject({ name: "PiError", code: "session_locked" });
 	});
 });

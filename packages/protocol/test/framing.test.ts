@@ -43,6 +43,19 @@ describe("binary framing", () => {
 		coalesced.end();
 	});
 
+	test("assembles payloads spanning multiple internal blocks", () => {
+		const payload = Uint8Array.from({ length: 70_000 }, (_, index) => index % 251);
+		const wire = encodeFrame(payload);
+		const decoder = new FrameDecoder();
+		const frames = [
+			...decoder.push(wire.subarray(0, 101)),
+			...decoder.push(wire.subarray(101, 65_541)),
+			...decoder.push(wire.subarray(65_541)),
+		];
+		decoder.end();
+		expect(frames).toEqual([payload]);
+	});
+
 	test("handles every split point across a frame", () => {
 		const wire = encodeFrame(new Uint8Array([10, 20, 30, 40]));
 		for (let split = 0; split <= wire.byteLength; split++) {

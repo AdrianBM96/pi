@@ -4,11 +4,18 @@ import type {
 	JsonValue,
 	ModelMetadata,
 	SessionSummary,
-	ThinkingLevel,
 	ToolTranscriptItem,
 	TranscriptItem,
 } from "@earendil-works/pi-protocol";
-import { Container, ProcessTerminal, Spacer, setKeybindings, Text, TUI } from "@earendil-works/pi-tui";
+import {
+	Container,
+	ProcessTerminal,
+	Spacer,
+	setKeybindings,
+	Text,
+	type TUI,
+	TuiMainScreen,
+} from "@earendil-works/pi-tui";
 import { getAgentDir } from "../../config.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import type { SettingsManager } from "../../core/settings-manager.ts";
@@ -20,6 +27,11 @@ import { ToolExecutionComponent } from "../../modes/interactive/components/tool-
 import { UserMessageComponent } from "../../modes/interactive/components/user-message.ts";
 import { getEditorTheme, initTheme, stopThemeWatcher, theme } from "../../modes/interactive/theme/theme.ts";
 import type { ExperimentalClientController, ExperimentalClientView } from "./client-controller.ts";
+import {
+	EXPERIMENTAL_SLASH_COMMANDS,
+	isKnownExperimentalSlashCommand,
+	SlashCommandAutocompleteProvider,
+} from "./command-autocomplete.ts";
 
 export class DoubleClearAction {
 	private lastTriggeredAt?: number;
@@ -128,12 +140,13 @@ export class ExperimentalClientTui {
 		try {
 			const keybindings = KeybindingsManager.create();
 			setKeybindings(keybindings);
-			this.ui = new TUI(new ProcessTerminal(), settingsManager.getShowHardwareCursor(), getAgentDir());
+			this.ui = new TuiMainScreen(new ProcessTerminal(), settingsManager.getShowHardwareCursor(), getAgentDir());
 			this.ui.setClearOnShrink(settingsManager.getClearOnShrink());
 			this.editor = new CustomEditor(this.ui, getEditorTheme(), keybindings, {
 				paddingX: settingsManager.getEditorPaddingX(),
 				autocompleteMaxVisible: settingsManager.getAutocompleteMaxVisible(),
 			});
+			this.editor.setAutocompleteProvider(new SlashCommandAutocompleteProvider(EXPERIMENTAL_SLASH_COMMANDS));
 			this.editor.onSubmit = (text) => void this.handleSubmit(text);
 			this.editor.onAction("app.interrupt", () => void this.handleInterrupt());
 			this.editor.onAction("app.clear", () => this.handleClear());
@@ -318,21 +331,21 @@ export class ExperimentalClientTui {
 			else this.showModelSelector();
 			return;
 		}
-		if (command === "/thinking") {
-			if (argument) await this.selectThinkingByName(argument);
-			else this.showThinkingSelector();
-			return;
-		}
 		if (command === "/reconnect") {
 			await this.reconnect();
 			return;
 		}
 
-		if (command === "/quit" || command === "/exit") {
+		if (command === "/quit") {
 			await this.shutdown();
 			return;
 		}
-		this.setStatus(`Unknown command: ${command}`, true);
+		this.setStatus(
+			isKnownExperimentalSlashCommand(command.slice(1))
+				? `Command ${command} is not implemented in experimental mode`
+				: `Unknown command: ${command}`,
+			true,
+		);
 	}
 
 	private async reconnect(): Promise<void> {
@@ -434,30 +447,6 @@ export class ExperimentalClientTui {
 		}
 	}
 
-	private showThinkingSelector(): void {
-		if (!this.requireIdle("change thinking level")) return;
-		const model = this.currentModel();
-		if (!model) return;
-		this.showSelector("Select thinking level", [...model.supportedThinkingLevels], async (label) => {
-			await this.controller.setThinking(label as ThinkingLevel);
-			this.setStatus(`Thinking: ${label}`);
-		});
-	}
-
-	private async selectThinkingByName(name: string): Promise<void> {
-		if (!this.requireIdle("change thinking level")) return;
-		const model = this.currentModel();
-		if (!model?.supportedThinkingLevels.includes(name as ThinkingLevel)) {
-			this.setStatus(`Unsupported thinking level: ${name}`, true);
-			return;
-		}
-		try {
-			await this.controller.setThinking(name as ThinkingLevel);
-		} catch (error) {
-			this.showError(error);
-		}
-	}
-
 	private async cycleThinking(): Promise<void> {
 		if (!this.requireIdle("change thinking level")) return;
 		const model = this.currentModel();
@@ -509,7 +498,10 @@ export class ExperimentalClientTui {
 		this.clearWorkingStatus();
 		this.status.clear();
 		this.statusMessage = message ? new Text(theme.fg(error ? "error" : "muted", message), 1, 0) : undefined;
-		if (this.statusMessage) this.status.addChild(this.statusMessage);
+		if (this.statusMessage) {
+			this.status.addChild(new Spacer(1));
+			this.status.addChild(this.statusMessage);
+		}
 		this.syncWorkingStatus();
 		this.ui.requestRender();
 	}

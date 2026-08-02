@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+	CborError,
 	DEFAULT_MAX_CBOR_BYTE_LENGTH,
 	DEFAULT_MAX_CBOR_CONTAINER_LENGTH,
 	DEFAULT_MAX_CBOR_DEPTH,
@@ -95,13 +96,13 @@ describe("CBOR codec", () => {
 		["Date", new Date(0)],
 		["Map", new Map<string, unknown>()],
 	] as const)("rejects unsupported encoder value: %s", (_label, value) => {
-		expect(() => encodeCbor(value)).toThrow();
+		expect(() => encodeCbor(value)).toThrow(CborError);
 	});
 
 	test("rejects maps with enumerable symbol keys", () => {
 		const value = { valid: true };
 		Object.defineProperty(value, Symbol("key"), { enumerable: true, value: false });
-		expect(() => encodeCbor(value)).toThrow();
+		expect(() => encodeCbor(value)).toThrow(CborError);
 	});
 
 	test("rejects lossy strings, cycles, and excessive encoder depth", () => {
@@ -147,7 +148,7 @@ describe("CBOR codec", () => {
 		["unsafe negative integer", "3b001fffffffffffff"],
 		["unsafe integer encoded as float64", "fb4340000000000000"],
 	] as const)("rejects invalid decoder input: %s", (_label, wire) => {
-		expect(() => decodeCbor(fromHex(wire))).toThrow();
+		expect(() => decodeCbor(fromHex(wire))).toThrow(CborError);
 	});
 
 	test("enforces depth and declared length limits before traversing values", () => {

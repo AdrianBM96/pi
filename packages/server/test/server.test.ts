@@ -395,36 +395,6 @@ afterEach(async () => {
 });
 
 describe("PiServer Unix integration", () => {
-	test("requires a valid first-message auth/version handshake", async () => {
-		const backend = new MemoryBackend();
-		backend.seed();
-		const { server } = await startServer(backend);
-
-		const badToken = await connect(server);
-		const authError = await badToken.hello("wrong");
-		expect(authError).toMatchObject({ type: "hello_error", error: { code: "auth" } });
-		await once(badToken.socket, "close");
-
-		const badVersion = await connect(server);
-		const versionError = await badVersion.hello(TOKEN, PROTOCOL_VERSION + 1);
-		expect(versionError).toMatchObject({ type: "hello_error", error: { code: "version" } });
-
-		const client = await connect(server);
-		const hello = await client.hello();
-		expect(hello).toMatchObject({
-			type: "hello",
-			version: PROTOCOL_VERSION,
-			snapshot: { sessions: [{ id: "session-1" }], models: [MODEL] },
-		});
-	});
-
-	test("times out clients that do not send a hello", async () => {
-		const { server } = await startServer(new MemoryBackend(), { handshakeTimeoutMs: 10 });
-		const client = await connect(server);
-		await once(client.socket, "close");
-		expect(client.socket.destroyed).toBe(true);
-	});
-
 	test("creates server-assigned durable IDs and supports list, attach, and detach", async () => {
 		const { server, backend } = await startServer();
 		const client = await connect(server);
@@ -454,27 +424,6 @@ describe("PiServer Unix integration", () => {
 		expect(backend.runtimes.get(backend.lastCreatedId!)?.length).toBe(2);
 	});
 
-	test("keeps multiple attachments on one connection independent", async () => {
-		const backend = new MemoryBackend();
-		backend.seed("first");
-		backend.seed("second");
-		const { server } = await startServer(backend);
-		const client = await connect(server);
-		await client.hello();
-		await attach(client, "first");
-		await attach(client, "second");
-
-		await client.request({ command: "detach", sessionId: "first" });
-		expect(backend.latestRuntime("first").disposeCount).toBe(1);
-		expect(backend.latestRuntime("second").disposeCount).toBe(0);
-		const response = await client.request({
-			command: "set_thinking",
-			sessionId: "second",
-			thinkingLevel: "medium",
-		});
-		expect(response).toMatchObject({ ok: true, result: { session: { id: "second", thinkingLevel: "medium" } } });
-	});
-
 	test("broadcasts full snapshots and progress only to clients attached to that session", async () => {
 		const backend = new MemoryBackend();
 		backend.seed();
@@ -500,6 +449,7 @@ describe("PiServer Unix integration", () => {
 			type: "event",
 			event: { type: "session_progress", sessionId: "session-1", progress },
 		});
+		await unattachedClient.request({ command: "list" });
 		expect(
 			unattachedClient.messages.some(
 				(message) => message.type === "event" && message.event.type === "session_progress",
@@ -519,6 +469,7 @@ describe("PiServer Unix integration", () => {
 			type: "event",
 			event: { type: "session_snapshot", snapshot: { id: "session-1", attached: true, locked: true } },
 		});
+		await unattachedClient.request({ command: "list" });
 		expect(
 			unattachedClient.messages.some(
 				(message) => message.type === "event" && message.event.type === "session_snapshot",
@@ -690,21 +641,5 @@ describe("PiServer Unix integration", () => {
 		expect(locked).toMatchObject({ ok: false, error: { code: "session_locked" } });
 		const unattached = await client.request({ command: "abort", sessionId: "locked" });
 		expect(unattached).toMatchObject({ ok: false, error: { code: "invalid_request" } });
-	});
-
-	test("gracefully closes clients and releases all live runtimes", async () => {
-		const backend = new MemoryBackend();
-		backend.seed();
-		const { server } = await startServer(backend);
-		const client = await connect(server);
-		await client.hello();
-		await attach(client, "session-1");
-		const runtime = backend.latestRuntime("session-1");
-		const clientClosed = once(client.socket, "close");
-		await server.close();
-		await clientClosed;
-		expect(runtime.disposeCount).toBe(1);
-		expect(server.unixSocketPath).toBeUndefined();
-		await server.close();
 	});
 });

@@ -113,6 +113,40 @@ describe("AgentHarness", () => {
 		expect(harness.getFollowUpMode()).toBe("one-at-a-time");
 	});
 
+	it("reports active turns and terminates without persisting a failure message", async () => {
+		const registration = newFaux();
+		const entered = deferred();
+		const release = deferred();
+		registration.setResponses([
+			async (_context, options) => {
+				entered.resolve();
+				await release.promise;
+				expect(options?.signal?.aborted).toBe(true);
+				return fauxAssistantMessage("must not persist");
+			},
+		]);
+		const session = new Session(new InMemorySessionStorage());
+		const harness = new AgentHarness({ models, session, model: registration.getModel() });
+		const prompt = harness.prompt("hello");
+
+		expect(harness.getPhase()).toBe("turn");
+		await entered.promise;
+		const terminalError = new Error("session lock lost");
+		harness.terminate(terminalError);
+		release.resolve();
+
+		await expect(prompt).rejects.toMatchObject({ name: "AgentHarnessError" });
+		expect(harness.getPhase()).toBe("idle");
+		await expect(harness.prompt("again")).rejects.toMatchObject({
+			name: "AgentHarnessError",
+			message: "session lock lost",
+		});
+		const messages = (await session.getEntries()).flatMap((entry) =>
+			entry.type === "message" ? [entry.message] : [],
+		);
+		expect(messages.map((message) => message.role)).not.toContain("assistant");
+	});
+
 	it("drains one queued steering message at a time and emits queue updates", async () => {
 		const registration = newFaux();
 		const userCounts: number[] = [];

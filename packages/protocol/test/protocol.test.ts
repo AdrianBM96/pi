@@ -49,8 +49,9 @@ describe("protocol validation", () => {
 		expect(isSupportedProtocolVersion(2.5)).toBe(false);
 	});
 
-	test("accepts an integer version and bearer token in the client hello", () => {
-		expect(parseClientMessage(clientHello)).toEqual(clientHello);
+	test.each([0, 1, PROTOCOL_VERSION])("accepts integer client hello version %s for negotiation", (version) => {
+		const message = { ...clientHello, version };
+		expect(parseClientMessage(message)).toEqual(message);
 	});
 
 	test.each([

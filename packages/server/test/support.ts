@@ -256,6 +256,7 @@ export class WireClient {
 	private readonly channel: WireChannel;
 	private readonly decoder = new ServerMessageDecoder();
 	private readonly waiters = new Set<MessageWaiter>();
+	private readonly claimedMessages = new Set<ServerMessage>();
 	private readonly closedDeferred = new Deferred<void>();
 	private requestSequence = 0;
 	private closedValue = false;
@@ -268,10 +269,10 @@ export class WireClient {
 		return this.closedValue;
 	}
 
-	hello(token = TEST_TOKEN, version: number = PROTOCOL_VERSION): Promise<ServerMessage> {
+	async hello(token = TEST_TOKEN, version: number = PROTOCOL_VERSION): Promise<ServerMessage> {
 		const response = this.next((message) => message.type === "hello" || message.type === "hello_error");
-		void this.sendMessage({ type: "hello", token, version });
-		return response;
+		await this.sendMessage({ type: "hello", token, version });
+		return await response;
 	}
 
 	async request(command: Command, id = `request-${++this.requestSequence}`): Promise<ResponseEnvelope> {
@@ -295,8 +296,11 @@ export class WireClient {
 	}
 
 	next(predicate: (message: ServerMessage) => boolean): Promise<ServerMessage> {
-		const existing = this.messages.find(predicate);
-		if (existing) return Promise.resolve(existing);
+		const existing = this.messages.find((message) => !this.claimedMessages.has(message) && predicate(message));
+		if (existing) {
+			this.claimedMessages.add(existing);
+			return Promise.resolve(existing);
+		}
 		if (this.closedValue) return Promise.reject(new Error("Wire client is closed"));
 		return new Promise((resolve, reject) => this.waiters.add({ predicate, resolve, reject }));
 	}
@@ -316,7 +320,9 @@ export class WireClient {
 				for (const waiter of this.waiters) {
 					if (!waiter.predicate(message)) continue;
 					this.waiters.delete(waiter);
+					this.claimedMessages.add(message);
 					waiter.resolve(message);
+					break;
 				}
 			}
 		} catch (error) {
