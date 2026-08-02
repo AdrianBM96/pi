@@ -171,13 +171,9 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		return buffer;
 	}
 
-	private getViewportLines(
-		lines: string[],
-		height: number,
-		viewportTop: number,
-	): { lines: string[]; viewportTop: number } {
+	private getViewportLines(lines: string[], height: number, viewportTop: number): string[] {
 		const viewportLines = lines.slice(viewportTop, viewportTop + height);
-		if (viewportTop === 0 || viewportLines.length === 0) return { lines: viewportLines, viewportTop };
+		if (viewportTop === 0 || viewportLines.length === 0) return viewportLines;
 
 		for (let imageRow = viewportTop - 1; imageRow >= 0; imageRow--) {
 			const imageLine = lines[imageRow]!;
@@ -193,17 +189,17 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			}
 			if (isImageLine(imageLine) || visibleWidth(imageLine) > 0) break;
 		}
-		return { lines: viewportLines, viewportTop };
+		return viewportLines;
 	}
 
 	private repaintVisibleKittyImages(): void {
-		const viewport = this.getViewportLines(this.previousLines, this.terminal.rows, this.previousViewportTop);
+		const viewportLines = this.getViewportLines(this.previousLines, this.terminal.rows, this.previousViewportTop);
 		let placements = "";
 		let cursorRow = this.hardwareCursorRow;
-		for (let row = 0; row < viewport.lines.length; row++) {
-			const line = viewport.lines[row]!;
+		for (let row = 0; row < viewportLines.length; row++) {
+			const line = viewportLines[row]!;
 			if (extractKittyImageIds(line).length === 0) continue;
-			const targetRow = viewport.viewportTop + row;
+			const targetRow = this.previousViewportTop + row;
 			const rowDelta = targetRow - cursorRow;
 			if (rowDelta > 0) placements += `\x1b[${rowDelta}B`;
 			else if (rowDelta < 0) placements += `\x1b[${-rowDelta}A`;
@@ -227,15 +223,15 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			const height = this.terminal.rows;
 			const { lines, cursorPos } = this.renderLines(width, height);
 			const viewportTop = Math.max(0, lines.length - height);
-			const viewport = this.getViewportLines(lines, height, viewportTop);
+			const viewportLines = this.getViewportLines(lines, height, viewportTop);
 			this.fullRedrawCount += 1;
 			this.terminal.write(
-				`\x1b[?2026h${this.deleteKittyImages(this.previousKittyImageIds)}\x1b[2J\x1b[H${this.renderLineRange(viewport.lines, 0, viewport.lines.length)}\x1b[?2026l`,
+				`\x1b[?2026h${this.deleteKittyImages(this.previousKittyImageIds)}\x1b[2J\x1b[H${this.renderLineRange(viewportLines, 0, viewportLines.length)}\x1b[?2026l`,
 			);
 			this.cursorRow = Math.max(0, lines.length - 1);
 			this.hardwareCursorRow = this.cursorRow;
 			this.maxLinesRendered = lines.length;
-			this.previousViewportTop = viewport.viewportTop;
+			this.previousViewportTop = viewportTop;
 			this.positionHardwareCursor(cursorPos, lines.length);
 			this.previousLines = lines;
 			this.previousKittyImageIds = this.collectKittyImageIds(lines);

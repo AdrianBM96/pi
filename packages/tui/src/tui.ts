@@ -674,24 +674,36 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	override invalidate(): void {
-		super.invalidate();
+		for (const root of this.getMountedRoots()) root.invalidate?.();
 		for (const overlay of this.overlayStack) overlay.component.invalidate?.();
+	}
+
+	private activateRenderer(startTerminal: () => void): void {
+		this.beforeTerminalStart();
+		startTerminal();
+		this.afterTerminalStart();
+		this.terminal.hideCursor();
+		if (this.terminalColorSchemeNotificationsEnabled) this.terminal.write("\x1b[?2031h");
+		this.queryCellSize();
+		this.requestRender();
+	}
+
+	private deactivateRenderer(stopTerminal: () => void): void {
+		if (this.terminalColorSchemeNotificationsEnabled) this.terminal.write("\x1b[?2031l");
+		this.beforeTerminalStop();
+		this.terminal.showCursor();
+		stopTerminal();
+		this.afterTerminalStop();
 	}
 
 	start(): void {
 		this.stopped = false;
-		this.beforeTerminalStart();
-		this.terminal.start(
-			(data) => this.handleTerminalInput(data),
-			() => this.requestRender(),
-		);
-		this.afterTerminalStart();
-		this.terminal.hideCursor();
-		if (this.terminalColorSchemeNotificationsEnabled) {
-			this.terminal.write("\x1b[?2031h");
-		}
-		this.queryCellSize();
-		this.requestRender();
+		this.activateRenderer(() => {
+			this.terminal.start(
+				(data) => this.handleTerminalInput(data),
+				() => this.requestRender(),
+			);
+		});
 	}
 
 	addInputListener(listener: TuiInputListener): () => void {
@@ -735,14 +747,12 @@ export abstract class TuiBase extends Container implements TUI {
 	/** Change renderer-specific screen modes while retaining this TUI instance. */
 	protected switchRenderer(switchMode: () => void, resumeTerminal = true): void {
 		const canSuspend = this.terminal.suspendRenderer !== undefined && this.terminal.resumeRenderer !== undefined;
-		if (this.terminalColorSchemeNotificationsEnabled) this.terminal.write("\x1b[?2031l");
 		this.rendererSwitchStop = true;
 		try {
-			this.beforeTerminalStop();
-			this.terminal.showCursor();
-			if (canSuspend) this.terminal.suspendRenderer?.();
-			else this.terminal.stop();
-			this.afterTerminalStop();
+			this.deactivateRenderer(() => {
+				if (canSuspend) this.terminal.suspendRenderer?.();
+				else this.terminal.stop();
+			});
 		} finally {
 			this.rendererSwitchStop = false;
 		}
@@ -750,20 +760,16 @@ export abstract class TuiBase extends Container implements TUI {
 		switchMode();
 		if (!resumeTerminal && canSuspend) return;
 
-		this.beforeTerminalStart();
-		if (canSuspend) {
-			this.terminal.resumeRenderer?.();
-		} else {
-			this.terminal.start(
-				(data) => this.handleTerminalInput(data),
-				() => this.requestRender(),
-			);
-		}
-		this.afterTerminalStart();
-		this.terminal.hideCursor();
-		if (this.terminalColorSchemeNotificationsEnabled) this.terminal.write("\x1b[?2031h");
-		this.queryCellSize();
-		this.requestRender();
+		this.activateRenderer(() => {
+			if (canSuspend) {
+				this.terminal.resumeRenderer?.();
+			} else {
+				this.terminal.start(
+					(data) => this.handleTerminalInput(data),
+					() => this.requestRender(),
+				);
+			}
+		});
 	}
 
 	protected renderImmediately(force = false, render: () => void = () => this.doRender()): void {
@@ -784,13 +790,7 @@ export abstract class TuiBase extends Container implements TUI {
 			clearTimeout(this.renderTimer);
 			this.renderTimer = undefined;
 		}
-		if (this.terminalColorSchemeNotificationsEnabled) {
-			this.terminal.write("\x1b[?2031l");
-		}
-		this.beforeTerminalStop();
-		this.terminal.showCursor();
-		this.terminal.stop();
-		this.afterTerminalStop();
+		this.deactivateRenderer(() => this.terminal.stop());
 	}
 
 	requestRender(force = false): void {

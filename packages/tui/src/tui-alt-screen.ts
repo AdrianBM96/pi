@@ -93,7 +93,6 @@ export class TuiAltScreen extends TuiMainScreen implements ViewportTUI {
 		return this.alternateScreenEnabled ? true : (undefined as never);
 	}
 	private previousScreen: string[] = [];
-	private lastDocument: string[] = [];
 	private previousScreenWidth = 0;
 	private previousScreenHeight = 0;
 	private layoutRoot: Component | undefined;
@@ -151,16 +150,12 @@ export class TuiAltScreen extends TuiMainScreen implements ViewportTUI {
 		if (this.layoutRoot === component) return;
 		this.layoutRoot = component;
 		this.currentLayout = undefined;
+		this.invalidate();
 		this.requestRender();
 	}
 
 	override render(width: number): string[] {
 		return this.alternateScreenEnabled && this.layoutRoot ? this.layoutRoot.render(width) : super.render(width);
-	}
-
-	override invalidate(): void {
-		super.invalidate();
-		if (this.alternateScreenEnabled) this.layoutRoot?.invalidate();
 	}
 
 	protected override getMountedRoots(): readonly Component[] {
@@ -189,7 +184,6 @@ export class TuiAltScreen extends TuiMainScreen implements ViewportTUI {
 			setCapabilities({ ...capabilities, images: null });
 			this.invalidate();
 		}
-		this.lastDocument = [];
 		this.selectionAnchor = undefined;
 		this.selectionFocus = undefined;
 		this.pressedUrl = undefined;
@@ -228,13 +222,13 @@ export class TuiAltScreen extends TuiMainScreen implements ViewportTUI {
 		} else {
 			const width = Math.max(1, this.terminal.columns);
 			const documentLines = this.render(width).map((line) => line.replace(OSC133_ZONE_PREFIX, ""));
-			this.lastDocument = this.applyLineResets(documentLines.map((line) => line.replaceAll(CURSOR_MARKER, ""))).map(
+			const lastDocument = this.applyLineResets(documentLines.map((line) => line.replaceAll(CURSOR_MARKER, ""))).map(
 				(line) => (isImageLine(line) || visibleWidth(line) <= width ? line : sliceByColumn(line, 0, width, true)),
 			);
 			let buffer = `${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}${DISABLE_AUTOWRAP}`;
-			for (let row = 0; row < this.lastDocument.length; row++) {
+			for (let row = 0; row < lastDocument.length; row++) {
 				if (row > 0) buffer += "\r\n";
-				buffer += `\r\x1b[2K${this.lastDocument[row] ?? ""}`;
+				buffer += `\r\x1b[2K${lastDocument[row] ?? ""}`;
 			}
 			buffer += `\x1b[0m${ENABLE_AUTOWRAP}\r\n\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`;
 			this.terminal.write(buffer);

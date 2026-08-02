@@ -32,6 +32,12 @@ export class SwitchableTui extends TuiAltScreen {
 		return this.currentMode;
 	}
 
+	private renderMainScreen(): void {
+		this.renderedMainScreen = true;
+		this.renderMainScreenImmediately(this.mainViewportDirty);
+		this.mainViewportDirty = false;
+	}
+
 	setMode(mode: TuiScreenMode): boolean {
 		if (mode === this.currentMode) return true;
 		if (this.hasOverlayEntries) return false;
@@ -46,11 +52,7 @@ export class SwitchableTui extends TuiAltScreen {
 			this.currentMode = mode;
 		});
 		this.invalidate();
-		if (mode === "main") {
-			this.renderedMainScreen = true;
-			this.renderMainScreenImmediately(this.mainViewportDirty);
-			this.mainViewportDirty = false;
-		}
+		if (mode === "main") this.renderMainScreen();
 		return true;
 	}
 
@@ -58,10 +60,7 @@ export class SwitchableTui extends TuiAltScreen {
 		if (this.started) return;
 		super.start();
 		this.started = true;
-		if (this.currentMode === "main" && this.mainViewportDirty) {
-			this.renderMainScreenImmediately(true);
-			this.mainViewportDirty = false;
-		}
+		if (this.currentMode === "main" && this.mainViewportDirty) this.renderMainScreen();
 	}
 
 	override stop(): void {
@@ -73,7 +72,7 @@ export class SwitchableTui extends TuiAltScreen {
 					this.currentMode = "main";
 				}, false);
 				this.invalidate();
-				this.renderMainScreenImmediately(this.mainViewportDirty);
+				this.renderMainScreen();
 			}
 		} finally {
 			try {

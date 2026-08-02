@@ -457,8 +457,7 @@ export class InteractiveMode {
 
 	constructor(runtimeHost: AgentSessionRuntime, options: InteractiveModeOptions = {}) {
 		this.runtimeHost = runtimeHost;
-		const uiMode = options.uiMode ?? this.settingsManager.getUiMode();
-		this.options = { ...options, uiMode };
+		this.options = { ...options };
 		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
 		this.runtimeHost.setBeforeSessionInvalidate(() => {
 			this.resetExtensionUI();
@@ -468,7 +467,7 @@ export class InteractiveMode {
 		});
 		this.version = VERSION;
 		this.ui = createInteractiveTui({
-			uiMode,
+			uiMode: options.uiMode ?? this.settingsManager.getUiMode(),
 			showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
 			logDirectory: getAgentDir(),
 		});
