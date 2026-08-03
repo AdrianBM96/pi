@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Command, EventEnvelope, SessionSnapshot, SessionSummary } from "@earendil-works/pi-protocol";
 import type { ByteConnection, ConnectionState } from "./connection.ts";
-import { PiServerError } from "./errors.ts";
+import { InternalServerError, PiServerError } from "./errors.ts";
 import type { CreateSessionOptions, PiSessionBackend, PiSessionRuntime, PiSessionRuntimeEvent } from "./types.ts";
 
 interface LiveSession {
@@ -223,9 +223,8 @@ export class LiveSessionManager {
 		try {
 			const snapshot = await runtime.snapshot();
 			if (snapshot.id !== id) {
-				throw new PiServerError(
-					"invalid_request",
-					`Backend returned session ${snapshot.id} for server-assigned session ${id}`,
+				throw new InternalServerError(
+					new Error(`Backend returned session ${snapshot.id} for server-assigned session ${id}`),
 				);
 			}
 			live = {
@@ -283,7 +282,7 @@ export class LiveSessionManager {
 	private async normalizedSnapshot(live: LiveSession): Promise<SessionSnapshot> {
 		const snapshot = await live.runtime.snapshot();
 		if (snapshot.id !== live.id) {
-			throw new PiServerError("invalid_request", `Runtime session ID changed from ${live.id} to ${snapshot.id}`);
+			throw new InternalServerError(new Error(`Runtime session ID changed from ${live.id} to ${snapshot.id}`));
 		}
 		return {
 			...snapshot,

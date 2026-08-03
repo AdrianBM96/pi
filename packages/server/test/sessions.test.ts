@@ -367,7 +367,7 @@ describe("PiServer Unix integration", () => {
 		const client = await connect(server);
 		await client.hello();
 		const response = await client.request({ command: "create" });
-		expect(response).toMatchObject({ ok: false, error: { code: "invalid_request" } });
+		expect(response).toMatchObject({ ok: false, error: { code: "internal_error" } });
 		expect(backend.latestRuntime("wrong-id").disposeCount).toBe(1);
 	});
 

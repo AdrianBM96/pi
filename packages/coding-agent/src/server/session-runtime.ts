@@ -12,7 +12,7 @@ import {
 import type { ModelRuntime } from "../core/model-runtime.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
 import { createServerHarness } from "./create-harness.ts";
-import { toPiServerError } from "./errors.ts";
+import { createInternalServerError, mapKnownServerError } from "./errors.ts";
 import type { ServerModelResolver } from "./model-resolver.ts";
 import type { SessionLease } from "./session-lock.ts";
 import { inspectServerSession } from "./session-state.ts";
@@ -127,7 +127,7 @@ export class CodingAgentSessionRuntime implements PiSessionRuntime {
 			this.assertUsable();
 		} catch (error) {
 			this.assertUsable();
-			throw toPiServerError(error);
+			throw mapKnownServerError(error) ?? toError(error);
 		} finally {
 			if (!this.lockCompromise) this.phase = "idle";
 		}
@@ -141,7 +141,7 @@ export class CodingAgentSessionRuntime implements PiSessionRuntime {
 			this.assertUsable();
 		} catch (error) {
 			this.assertUsable();
-			throw toPiServerError(error);
+			throw mapKnownServerError(error) ?? toError(error);
 		}
 	}
 
@@ -153,7 +153,7 @@ export class CodingAgentSessionRuntime implements PiSessionRuntime {
 			this.assertUsable();
 		} catch (error) {
 			this.assertUsable();
-			throw toPiServerError(error);
+			throw mapKnownServerError(error) ?? toError(error);
 		}
 	}
 
@@ -243,8 +243,7 @@ export class CodingAgentSessionRuntime implements PiSessionRuntime {
 
 	private handleProjectionFailure(error: unknown): void {
 		if (this.terminalError) return;
-		this.terminalError = new PiServerError("invalid_request", "Session protocol projection failed");
-		this.terminalError.cause = error instanceof Error ? error : new Error(String(error));
+		this.terminalError = createInternalServerError(error);
 		this.terminateHarness(this.terminalError);
 	}
 
@@ -272,8 +271,7 @@ export class CodingAgentSessionRuntime implements PiSessionRuntime {
 			if (this.terminalError || this.lockCompromise || this.lease.compromisedError() || this.disposed) {
 				this.assertUsable();
 			}
-			this.terminalError = new PiServerError("invalid_request", `Session failed to ${operation}`);
-			this.terminalError.cause = toPiServerError(error);
+			this.terminalError = mapKnownServerError(error) ?? createInternalServerError(error);
 			this.terminateHarness(this.terminalError);
 			throw this.terminalError;
 		} finally {

@@ -2,7 +2,7 @@ import type { JsonValue, ProtocolErrorCode } from "@earendil-works/pi-protocol";
 
 export type PiServerOperationErrorCode = Extract<
 	ProtocolErrorCode,
-	"busy" | "session_locked" | "not_found" | "invalid_request"
+	"busy" | "session_locked" | "not_found" | "invalid_request" | "internal_error"
 >;
 
 /** A backend/runtime error that can safely cross the protocol boundary. */
@@ -36,5 +36,13 @@ export class SessionNotFoundError extends PiServerError {
 	constructor(message = "Session was not found", details?: JsonValue) {
 		super("not_found", message, details);
 		this.name = "SessionNotFoundError";
+	}
+}
+
+export class InternalServerError extends PiServerError {
+	constructor(cause: Error) {
+		super("internal_error", "Internal server error");
+		this.name = "InternalServerError";
+		this.cause = cause;
 	}
 }

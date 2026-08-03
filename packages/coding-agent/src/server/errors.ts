@@ -1,7 +1,7 @@
-import { AgentHarnessError, SessionError } from "@earendil-works/pi-agent-core";
+import { AgentHarnessError, SessionError, toError } from "@earendil-works/pi-agent-core";
 import { PiServerError } from "@earendil-works/pi-server";
 
-export function toPiServerError(error: unknown): Error {
+export function mapKnownServerError(error: unknown): PiServerError | undefined {
 	if (error instanceof PiServerError) return error;
 	if (error instanceof AgentHarnessError) {
 		if (error.code === "busy") return new PiServerError("busy", error.message);
@@ -13,5 +13,11 @@ export function toPiServerError(error: unknown): Error {
 	if (error instanceof SessionError && error.code === "not_found") {
 		return new PiServerError("not_found", error.message);
 	}
-	return error instanceof Error ? error : new Error(String(error));
+	return undefined;
+}
+
+export function createInternalServerError(cause: unknown): PiServerError {
+	const error = new PiServerError("internal_error", "Internal server error");
+	error.cause = toError(cause);
+	return error;
 }

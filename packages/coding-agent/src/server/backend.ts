@@ -8,6 +8,7 @@ import {
 	type SessionCreateOptions,
 	type SessionMetadata,
 	type SessionRepository,
+	toError,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -21,7 +22,7 @@ import {
 import { getAgentDir } from "../config.ts";
 import { ModelRuntime } from "../core/model-runtime.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
-import { toPiServerError } from "./errors.ts";
+import { mapKnownServerError } from "./errors.ts";
 import { ServerModelResolver } from "./model-resolver.ts";
 import { type SessionLease, SessionLockManager } from "./session-lock.ts";
 import { CodingAgentSessionRuntime } from "./session-runtime.ts";
@@ -230,7 +231,7 @@ export class CodingAgentServerBackend<
 			if (cleanupErrors.length > 0) {
 				throw new AggregateError([error, ...cleanupErrors], `Failed to create and clean up session ${options.id}`);
 			}
-			throw toPiServerError(error);
+			throw mapKnownServerError(error) ?? toError(error);
 		}
 	}
 
@@ -256,7 +257,7 @@ export class CodingAgentServerBackend<
 			return await this.createRuntime(session, model, thinkingLevel, lease, state.cwd);
 		} catch (error) {
 			await lease.release();
-			throw toPiServerError(error);
+			throw mapKnownServerError(error) ?? toError(error);
 		}
 	}
 
@@ -297,5 +298,3 @@ async function validateCwd(cwd: string): Promise<void> {
 		await env.cleanup();
 	}
 }
-
-export { toPiServerError } from "./errors.ts";

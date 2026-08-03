@@ -237,14 +237,14 @@ describe("coding-agent session runtime", () => {
 		try {
 			await expect(runtime.setModel({ provider: fixture.faux.provider.id, id: "faux-plain" })).rejects.toMatchObject(
 				{
-					code: "invalid_request",
-					message: "Session failed to set model",
+					code: "internal_error",
+					message: "Internal server error",
 					cause: expect.objectContaining({ message: expect.stringContaining("thinking write failed") }),
 				},
 			);
 			await expect(runtime.snapshot()).rejects.toMatchObject({
-				code: "invalid_request",
-				message: "Session failed to set model",
+				code: "internal_error",
+				message: "Internal server error",
 			});
 		} finally {
 			appendSpy.mockRestore();
@@ -318,11 +318,11 @@ describe("coding-agent session runtime", () => {
 				fauxAssistantMessage(fauxToolCall("read", { path: Number.NaN }), { stopReason: "toolUse" }),
 			]);
 			await expect(runtime.prompt({ text: "trigger invalid input" })).rejects.toMatchObject({
-				code: "invalid_request",
-				message: "Session protocol projection failed",
+				code: "internal_error",
+				message: "Internal server error",
 			});
 			expect(projectionError?.cause).toBeInstanceOf(TypeError);
-			await expect(runtime.snapshot()).rejects.toMatchObject({ code: "invalid_request" });
+			await expect(runtime.snapshot()).rejects.toMatchObject({ code: "internal_error" });
 		} finally {
 			await runtime.dispose();
 			await removeServerBackendFixture(fixture);

@@ -345,6 +345,10 @@ export class PiServer {
 
 	private toProtocolError(error: unknown): ProtocolError {
 		if (error instanceof PiServerError) {
+			if (error.code === "internal_error") {
+				this.reportError(error.cause ?? error);
+				return { code: "internal_error", message: "Internal server error" };
+			}
 			return error.details === undefined
 				? { code: error.code, message: error.message }
 				: { code: error.code, message: error.message, details: error.details };
@@ -353,7 +357,7 @@ export class PiServer {
 			return { code: "invalid_request", message: error.message };
 		}
 		this.reportError(error);
-		return { code: "invalid_request", message: "Internal server error" };
+		return { code: "internal_error", message: "Internal server error" };
 	}
 
 	private reportError(error: unknown): void {

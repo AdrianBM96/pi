@@ -10,6 +10,7 @@
 ### Fixed
 
 - Hardened protocol adapters against contradictory lifecycle states, invalid identifiers and timestamps, sparse execution arrays, and additive `pi-ai` contract drift.
+- Changed unexpected backend failures to report `internal_error` without exposing implementation details.
 
 ## [0.83.0] - 2026-07-29
 

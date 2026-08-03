@@ -3,8 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { encodeClientMessage, encodeFrame, PROTOCOL_VERSION } from "@earendil-works/pi-protocol";
 import { afterEach, describe, expect, test } from "vitest";
-import { type PiServer, PiServerError } from "../src/index.ts";
-import { connectUnixTestClient, Deferred, type ProtocolTestClient, TestSessionBackend } from "../src/testing/index.ts";
+import { InternalServerError, type PiServer, PiServerError } from "../src/index.ts";
+import {
+	connectUnixTestClient,
+	Deferred,
+	type ProtocolTestClient,
+	TEST_TOKEN,
+	TestSessionBackend,
+} from "../src/testing/index.ts";
 import { createUnixServer, type UnixServerOptions } from "../src/transports/unix/index.ts";
 
 const servers = new Set<PiServer>();
@@ -245,6 +251,29 @@ describe("Unix transport conformance", () => {
 		expect(backend.latestRuntime("terminal")).not.toBe(runtime);
 	});
 
+	test("reports wrapped internal causes without exposing them to clients", async () => {
+		class FailingBackend extends TestSessionBackend {
+			private listCount = 0;
+
+			override async listSessions() {
+				this.listCount += 1;
+				if (this.listCount > 1) throw new InternalServerError(new Error("private wrapped detail"));
+				return super.listSessions();
+			}
+		}
+		const errors: Error[] = [];
+		const backend = new FailingBackend();
+		const { server } = await startServer(backend, { onError: (error) => errors.push(error) });
+		const client = await connect(server);
+		await client.hello();
+
+		expect(await client.request({ command: "list" })).toMatchObject({
+			ok: false,
+			error: { code: "internal_error", message: "Internal server error" },
+		});
+		expect(errors).toContainEqual(expect.objectContaining({ message: "private wrapped detail" }));
+	});
+
 	test("does not expose unexpected backend errors to clients", async () => {
 		class FailingBackend extends TestSessionBackend {
 			private listCount = 0;
@@ -267,7 +296,7 @@ describe("Unix transport conformance", () => {
 		await client.hello();
 		expect(await client.request({ command: "list" })).toMatchObject({
 			ok: false,
-			error: { code: "invalid_request", message: "Internal server error" },
+			error: { code: "internal_error", message: "Internal server error" },
 		});
 		expect(errors).toContainEqual(expect.objectContaining({ message: "private backend detail" }));
 	});
