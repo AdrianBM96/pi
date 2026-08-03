@@ -551,7 +551,7 @@ jobs:
             docker run --detach `
               --name $container `
               --network none `
-              --isolation process `
+              --isolation hyperv `
               --memory 4g `
               --cpus 2 `
               --mount $mount `
@@ -576,6 +576,8 @@ jobs:
         run: |
           $networkMode = docker inspect --format '{{.HostConfig.NetworkMode}}' $env:CONTAINER
           if ($networkMode -ne "none") { throw "Unexpected Docker network mode: $networkMode" }
+          $isolation = docker inspect --format '{{.HostConfig.Isolation}}' $env:CONTAINER
+          if ($isolation -ne "hyperv") { throw "Unexpected Docker isolation mode: $isolation" }
           docker exec $env:CONTAINER C:\workspace\.pi-tools\node\node.exe --version
           docker exec $env:CONTAINER C:\workspace\.pi-tools\node\node.exe -e "require('node:fs').accessSync('C:\\workspace\\.pi-ci\\issue.json')"
           $sandboxEnv = docker exec $env:CONTAINER powershell.exe -NoProfile -Command 'Get-ChildItem Env: | ForEach-Object { "$($_.Name)=$($_.Value)" }'
