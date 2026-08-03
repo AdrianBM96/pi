@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
-import { isAbsolute, relative } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { realpathSync } from "node:fs";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
 import {
@@ -161,7 +161,10 @@ function createSandboxBashOperations(): BashOperations {
 }
 
 export default function (pi: ExtensionAPI) {
-	const readTool = createReadTool(sandboxWorkspace, { operations: createSandboxReadOperations() });
+	const readTool = createReadTool(sandboxWorkspace, {
+		operations: createSandboxReadOperations(),
+		resolvePath: (filePath, cwd) => resolve(cwd, filePath),
+	});
 	const bashTool = createBashTool(sandboxWorkspace, {
 		operations: createSandboxBashOperations(),
 		exposeSessionEnvironment: false,

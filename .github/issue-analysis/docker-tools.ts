@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { resolve } from "node:path";
 import {
 	type BashOperations,
 	createBashTool,
@@ -178,7 +179,10 @@ function createContainerBashOperations(): BashOperations {
 }
 
 export default function (pi: ExtensionAPI) {
-	const readTool = createReadTool(guestWorkspace, { operations: createContainerReadOperations() });
+	const readTool = createReadTool(guestWorkspace, {
+		operations: createContainerReadOperations(),
+		resolvePath: (filePath, cwd) => resolve(cwd, filePath),
+	});
 	const bashTool = createBashTool(guestWorkspace, {
 		operations: createContainerBashOperations(),
 		exposeSessionEnvironment: false,
