@@ -510,6 +510,11 @@ jobs:
         working-directory: ${{ steps.workdir.outputs.name }}
         shell: pwsh
         run: |
+          $dockerService = Get-Service docker
+          if ($dockerService.Status -ne "Running") {
+            Start-Service docker
+            $dockerService.WaitForStatus("Running", [TimeSpan]::FromSeconds(30))
+          }
           docker build `
             --tag "pi-issue-analysis-sandbox:$env:GITHUB_RUN_ID" `
             --file .github/issue-analysis/Dockerfile.windows `
@@ -843,7 +848,7 @@ jobs:
 
       - name: Export session files
         id: export_session_files
-        if: always()
+        if: always() && steps.run_pi.outcome != 'skipped'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           PI_CODING_AGENT_DIR: ${{ runner.temp }}/pi-agent
