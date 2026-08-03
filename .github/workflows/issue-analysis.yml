@@ -195,14 +195,17 @@ jobs:
                 console.log(`Ignoring non-test push from @${username} on ${context.ref}`);
                 return;
               }
-              if (context.payload.head_commit?.message.includes('[probe-only]')) {
+              const commitMessage = context.payload.head_commit?.message || '';
+              if (commitMessage.includes('[probe-only]')) {
                 console.log('Skipping model analysis for a capability-probe-only push');
                 return;
               }
+              if (commitMessage.includes('[test-windows]')) runnerProfile = 'windows';
+              if (commitMessage.includes('[test-mac]')) runnerProfile = 'mac';
               issueUrl = 'https://github.com/earendil-works/pi/issues/7513';
               issueNumber = 7513;
               publishResults = false;
-              extraInstructions = 'Validate that all model-facing tools execute inside the Docker sandbox.';
+              extraInstructions = 'Validate that all model-facing tools execute inside the configured OS sandbox.';
             } else {
               console.log(`Unsupported event: ${context.eventName}`);
               return;
@@ -439,7 +442,7 @@ jobs:
         working-directory: ${{ steps.workdir.outputs.name }}
         run: npm run build
 
-      - name: Build Docker tool sandbox
+      - name: Build Linux Docker tool sandbox
         if: needs.authorize.outputs.runner_os == 'linux'
         working-directory: ${{ steps.workdir.outputs.name }}
         run: |
@@ -447,8 +450,8 @@ jobs:
             --tag "pi-issue-analysis-sandbox:${GITHUB_RUN_ID}" \
             .github/issue-analysis
 
-      - name: Start Docker tool sandbox
-        id: sandbox
+      - name: Start Linux Docker tool sandbox
+        id: sandbox_linux
         if: needs.authorize.outputs.runner_os == 'linux'
         env:
           WORKDIR: ${{ steps.workdir.outputs.name }}
@@ -484,10 +487,10 @@ jobs:
           echo "container=$container" >> "$GITHUB_OUTPUT"
           echo "workspace=$sandbox_workspace" >> "$GITHUB_OUTPUT"
 
-      - name: Verify Docker tool sandbox
+      - name: Verify Linux Docker tool sandbox
         if: needs.authorize.outputs.runner_os == 'linux'
         env:
-          CONTAINER: ${{ steps.sandbox.outputs.container }}
+          CONTAINER: ${{ steps.sandbox_linux.outputs.container }}
         run: |
           set -euo pipefail
           test "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$CONTAINER")" = "none"
@@ -501,6 +504,103 @@ jobs:
           fi
           docker exec "$CONTAINER" node -e \
             "fetch('https://api.github.com').then(() => process.exit(1), () => process.exit(0))"
+
+      - name: Build Windows Docker tool sandbox
+        if: needs.authorize.outputs.runner_os == 'windows'
+        working-directory: ${{ steps.workdir.outputs.name }}
+        shell: pwsh
+        run: |
+          docker build `
+            --tag "pi-issue-analysis-sandbox:$env:GITHUB_RUN_ID" `
+            --file .github/issue-analysis/Dockerfile.windows `
+            .github/issue-analysis
+          if ($LASTEXITCODE -ne 0) { throw "Windows sandbox image build failed with $LASTEXITCODE" }
+
+      - name: Start Windows Docker tool sandbox
+        id: sandbox_windows
+        if: needs.authorize.outputs.runner_os == 'windows'
+        shell: pwsh
+        env:
+          WORKDIR: ${{ steps.workdir.outputs.name }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sandboxWorkspace = Join-Path $env:RUNNER_TEMP "pi-sandbox-workspace-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $container = "pi-issue-analysis-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $sourceWorkspace = Join-Path $env:GITHUB_WORKSPACE $env:WORKDIR
+          try {
+            New-Item -ItemType Directory -Force -Path $sandboxWorkspace | Out-Null
+            robocopy $sourceWorkspace $sandboxWorkspace /E /COPY:DAT /DCOPY:DAT /R:2 /W:1 /NFL /NDL /NJH /NJS /NP
+            if ($LASTEXITCODE -ge 8) { throw "Workspace copy failed with robocopy exit code $LASTEXITCODE" }
+            $global:LASTEXITCODE = 0
+
+            $toolsDir = Join-Path $sandboxWorkspace ".pi-tools"
+            $nodeTarget = Join-Path $toolsDir "node"
+            $binTarget = Join-Path $toolsDir "bin"
+            New-Item -ItemType Directory -Force -Path $nodeTarget, $binTarget, (Join-Path $sandboxWorkspace ".pi-home"), (Join-Path $sandboxWorkspace ".pi-tmp") | Out-Null
+            $nodeDir = Split-Path (Get-Command node).Source
+            Copy-Item -Path (Join-Path $nodeDir "*") -Destination $nodeTarget -Recurse -Force
+            Copy-Item -Path (Get-Command rg).Source -Destination (Join-Path $binTarget "rg.exe") -Force
+            Copy-Item -Path (Get-Command fd).Source -Destination (Join-Path $binTarget "fd.exe") -Force
+
+            $mount = "type=bind,source=$sandboxWorkspace,target=C:\workspace"
+            docker run --detach `
+              --name $container `
+              --network none `
+              --isolation process `
+              --memory 4g `
+              --cpus 2 `
+              --mount $mount `
+              --workdir C:\workspace `
+              "pi-issue-analysis-sandbox:$env:GITHUB_RUN_ID" `
+              powershell.exe -NoProfile -Command "Start-Sleep -Seconds 2147483"
+            if ($LASTEXITCODE -ne 0) { throw "Windows sandbox container failed to start with $LASTEXITCODE" }
+          } catch {
+            docker rm --force $container 2>$null
+            Remove-Item -Recurse -Force $sandboxWorkspace -ErrorAction SilentlyContinue
+            throw
+          }
+
+          "container=$container" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "workspace=$sandboxWorkspace" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Verify Windows Docker tool sandbox
+        if: needs.authorize.outputs.runner_os == 'windows'
+        shell: pwsh
+        env:
+          CONTAINER: ${{ steps.sandbox_windows.outputs.container }}
+        run: |
+          $networkMode = docker inspect --format '{{.HostConfig.NetworkMode}}' $env:CONTAINER
+          if ($networkMode -ne "none") { throw "Unexpected Docker network mode: $networkMode" }
+          docker exec $env:CONTAINER C:\workspace\.pi-tools\node\node.exe --version
+          docker exec $env:CONTAINER C:\workspace\.pi-tools\node\node.exe -e "require('node:fs').accessSync('C:\\workspace\\.pi-ci\\issue.json')"
+          $sandboxEnv = docker exec $env:CONTAINER powershell.exe -NoProfile -Command 'Get-ChildItem Env: | ForEach-Object { "$($_.Name)=$($_.Value)" }'
+          if ($sandboxEnv -match '(^|\n)(GH_TOKEN|GITHUB_TOKEN|PI_AUTH_JSON|PI_CODING_AGENT_DIR)=') {
+            throw "Windows sandbox inherited a secret-bearing host variable"
+          }
+          docker exec $env:CONTAINER C:\workspace\.pi-tools\node\node.exe -e "fetch('https://api.github.com').then(() => process.exit(1), () => process.exit(0))"
+          if ($LASTEXITCODE -ne 0) { throw "Windows sandbox has outbound network access" }
+
+      - name: Prepare macOS tool sandbox
+        id: sandbox_macos
+        if: needs.authorize.outputs.runner_os == 'macos'
+        env:
+          WORKDIR: ${{ steps.workdir.outputs.name }}
+        run: |
+          set -euo pipefail
+          sandbox_workspace="$(mktemp -d "/private/tmp/pi-sandbox-workspace-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.XXXXXX")"
+          cleanup_on_error() { rm -rf "$sandbox_workspace"; }
+          trap cleanup_on_error ERR
+          cp -a "${GITHUB_WORKSPACE}/${WORKDIR}/." "$sandbox_workspace/"
+          mkdir -p "$sandbox_workspace/.pi-tools" "$sandbox_workspace/.pi-home" "$sandbox_workspace/.pi-tmp"
+          node_executable="$(node -p "require('node:fs').realpathSync(process.execPath)")"
+          node_root="$(cd "$(dirname "$node_executable")/.." && pwd -P)"
+          cp -a "$node_root" "$sandbox_workspace/.pi-tools/node"
+          sandbox_node="$sandbox_workspace/.pi-tools/node/bin/node"
+          "$sandbox_node" --version
+          test -f "$sandbox_workspace/.pi-ci/issue.json"
+          trap - ERR
+          echo "workspace=$sandbox_workspace" >> "$GITHUB_OUTPUT"
+          echo "node=$sandbox_node" >> "$GITHUB_OUTPUT"
 
       - name: Write auth.json
         id: write_auth
@@ -527,18 +627,28 @@ jobs:
 
       - name: Create host isolation sentinel
         id: host_sentinel
-        if: needs.authorize.outputs.publish_results != 'true' && needs.authorize.outputs.runner_os == 'linux'
-        run: |
-          sentinel="${RUNNER_TEMP}/pi-host-isolation-sentinel-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          printf 'host-only-sentinel-not-a-secret\n' > "$sentinel"
-          echo "path=$sentinel" >> "$GITHUB_OUTPUT"
+        if: needs.authorize.outputs.publish_results != 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const sentinel = path.join(
+              process.env.RUNNER_TEMP,
+              `pi-host-isolation-sentinel-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`,
+            );
+            fs.writeFileSync(sentinel, 'host-only-sentinel-not-a-secret\n', { mode: 0o600 });
+            core.setOutput('path', sentinel);
 
       - name: Run pi /is
         id: run_pi
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           PI_CODING_AGENT_DIR: ${{ runner.temp }}/pi-agent
-          PI_ISSUE_ANALYSIS_SANDBOX_CONTAINER: ${{ steps.sandbox.outputs.container }}
+          PI_ISSUE_ANALYSIS_SANDBOX_CONTAINER: ${{ steps.sandbox_linux.outputs.container || steps.sandbox_windows.outputs.container }}
+          PI_ISSUE_ANALYSIS_SANDBOX_PLATFORM: ${{ needs.authorize.outputs.runner_os }}
+          PI_ISSUE_ANALYSIS_MACOS_WORKSPACE: ${{ steps.sandbox_macos.outputs.workspace }}
+          PI_ISSUE_ANALYSIS_MACOS_NODE: ${{ steps.sandbox_macos.outputs.node }}
           EXTRA_INSTRUCTIONS: ${{ needs.authorize.outputs.extra_instructions }}
           HOST_SENTINEL_PATH: ${{ steps.host_sentinel.outputs.path }}
           WORKDIR: ${{ steps.workdir.outputs.name }}
@@ -553,7 +663,21 @@ jobs:
             const sessionDir = path.join(outDir, 'session');
             fs.mkdirSync(sessionDir, { recursive: true });
 
-            let prompt = fs.readFileSync(path.join(workdir, '.github', 'issue-analysis', 'prompt.md'), 'utf8').trim();
+            const sandboxExtension = process.env.PI_ISSUE_ANALYSIS_SANDBOX_CONTAINER
+              ? 'docker-tools.ts'
+              : process.env.PI_ISSUE_ANALYSIS_MACOS_WORKSPACE
+                ? 'macos-tools.ts'
+                : undefined;
+            if (!sandboxExtension) {
+              throw new Error('No issue-analysis tool sandbox was configured; refusing to run pi');
+            }
+            const sandboxWorkspace = process.env.PI_ISSUE_ANALYSIS_MACOS_WORKSPACE
+              || (process.env.PI_ISSUE_ANALYSIS_SANDBOX_PLATFORM === 'windows' ? 'C:\\workspace' : '/workspace');
+
+            let prompt = fs
+              .readFileSync(path.join(workdir, '.github', 'issue-analysis', 'prompt.md'), 'utf8')
+              .trim()
+              .replaceAll('/workspace', sandboxWorkspace);
             if (process.env.EXTRA_INSTRUCTIONS) {
               prompt += '\n\nAdditional trusted staff instructions:\n';
               prompt += process.env.EXTRA_INSTRUCTIONS;
@@ -578,14 +702,10 @@ jobs:
               '--no-extensions',
               '--no-skills',
               '--no-prompt-templates',
-              ...(process.env.PI_ISSUE_ANALYSIS_SANDBOX_CONTAINER
-                ? [
-                    '--extension',
-                    path.join(workdir, '.github', 'issue-analysis', 'docker-tools.ts'),
-                    '--tools',
-                    'read,bash',
-                  ]
-                : []),
+              '--extension',
+              path.join(workdir, '.github', 'issue-analysis', sandboxExtension),
+              '--tools',
+              'read,bash',
               '--session-dir',
               sessionDir,
               '--model',
@@ -617,16 +737,40 @@ jobs:
               throw new Error(`pi /is failed with exit code ${exitCode}`);
             }
 
-      - name: Stop Docker tool sandbox
-        if: always() && needs.authorize.outputs.runner_os == 'linux' && steps.sandbox.outcome == 'success'
+      - name: Stop Linux Docker tool sandbox
+        if: always() && steps.sandbox_linux.outcome == 'success'
         env:
-          CONTAINER: ${{ steps.sandbox.outputs.container }}
-          SANDBOX_WORKSPACE: ${{ steps.sandbox.outputs.workspace }}
-          HOST_SENTINEL_PATH: ${{ steps.host_sentinel.outputs.path }}
+          CONTAINER: ${{ steps.sandbox_linux.outputs.container }}
+          SANDBOX_WORKSPACE: ${{ steps.sandbox_linux.outputs.workspace }}
         run: |
           docker rm --force "$CONTAINER"
           rm -rf "$SANDBOX_WORKSPACE"
-          if [[ -n "$HOST_SENTINEL_PATH" ]]; then rm -f "$HOST_SENTINEL_PATH"; fi
+
+      - name: Stop Windows Docker tool sandbox
+        if: always() && steps.sandbox_windows.outcome == 'success'
+        shell: pwsh
+        env:
+          CONTAINER: ${{ steps.sandbox_windows.outputs.container }}
+          SANDBOX_WORKSPACE: ${{ steps.sandbox_windows.outputs.workspace }}
+        run: |
+          docker rm --force $env:CONTAINER
+          Remove-Item -Recurse -Force $env:SANDBOX_WORKSPACE
+
+      - name: Remove macOS tool sandbox
+        if: always() && steps.sandbox_macos.outcome == 'success'
+        env:
+          SANDBOX_WORKSPACE: ${{ steps.sandbox_macos.outputs.workspace }}
+        run: rm -rf "$SANDBOX_WORKSPACE"
+
+      - name: Remove host isolation sentinel
+        if: always() && steps.host_sentinel.outcome == 'success'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          HOST_SENTINEL_PATH: ${{ steps.host_sentinel.outputs.path }}
+        with:
+          script: |
+            const fs = require('fs');
+            fs.rmSync(process.env.HOST_SENTINEL_PATH, { force: true });
 
       - name: Persist refreshed auth.json
         if: always() && steps.write_auth.outcome == 'success'

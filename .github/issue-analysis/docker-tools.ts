@@ -7,14 +7,23 @@ import {
 	type ReadOperations,
 } from "@earendil-works/pi-coding-agent";
 
-const GUEST_WORKSPACE = "/workspace";
 const ALLOWED_TOOLS = new Set(["read", "bash"]);
 const configuredContainerName = process.env.PI_ISSUE_ANALYSIS_SANDBOX_CONTAINER;
+const configuredPlatform = process.env.PI_ISSUE_ANALYSIS_SANDBOX_PLATFORM;
 
 if (!configuredContainerName || !/^[A-Za-z0-9][A-Za-z0-9_.-]+$/.test(configuredContainerName)) {
 	throw new Error("PI_ISSUE_ANALYSIS_SANDBOX_CONTAINER is missing or invalid");
 }
+if (configuredPlatform !== "linux" && configuredPlatform !== "windows") {
+	throw new Error("PI_ISSUE_ANALYSIS_SANDBOX_PLATFORM must be linux or windows");
+}
 const containerName: string = configuredContainerName;
+const sandboxPlatform: "linux" | "windows" = configuredPlatform;
+const isWindows = sandboxPlatform === "windows";
+const guestWorkspace = isWindows ? "C:\\workspace" : "/workspace";
+const guestHome = isWindows ? "C:\\workspace\\.pi-home" : "/tmp/pi-home";
+const guestTemp = isWindows ? "C:\\workspace\\.pi-tmp" : "/tmp";
+const guestNode = isWindows ? "C:\\workspace\\.pi-tools\\node\\node.exe" : "node";
 
 type ContainerExecResult = {
 	stdout: Buffer;
@@ -35,15 +44,25 @@ function executeInContainer(command: string[], options: ContainerExecOptions = {
 		"exec",
 		...(options.input === undefined ? [] : ["-i"]),
 		"--workdir",
-		options.cwd ?? GUEST_WORKSPACE,
+		options.cwd ?? guestWorkspace,
 		"--env",
 		"CI=true",
 		"--env",
-		"HOME=/tmp/pi-home",
+		`HOME=${guestHome}`,
 		"--env",
-		"TMPDIR=/tmp",
+		`TMPDIR=${guestTemp}`,
+		"--env",
+		`TEMP=${guestTemp}`,
+		"--env",
+		`TMP=${guestTemp}`,
 		"--env",
 		"NO_COLOR=1",
+		...(isWindows
+			? [
+					"--env",
+					"PATH=C:\\workspace\\.pi-tools\\node;C:\\workspace\\.pi-tools\\bin;C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\WindowsPowerShell\\v1.0",
+				]
+			: []),
 		containerName,
 		...command,
 	];
@@ -116,14 +135,14 @@ function createContainerReadOperations(): ReadOperations {
 	return {
 		readFile: (path) =>
 			executeChecked([
-				"node",
+				guestNode,
 				"-e",
 				"const fs=require('node:fs');process.stdout.write(fs.readFileSync(process.argv[1]));",
 				path,
 			]),
 		access: async (path) => {
 			await executeChecked([
-				"node",
+				guestNode,
 				"-e",
 				"require('node:fs').accessSync(process.argv[1],require('node:fs').constants.R_OK);",
 				path,
@@ -135,7 +154,19 @@ function createContainerReadOperations(): ReadOperations {
 function createContainerBashOperations(): BashOperations {
 	return {
 		exec: async (command, cwd, { onData, signal, timeout }) => {
-			const result = await executeInContainer(["/bin/bash", "-lc", command], {
+			const shellCommand = isWindows
+				? [
+						"powershell.exe",
+						"-NoLogo",
+						"-NoProfile",
+						"-NonInteractive",
+						"-ExecutionPolicy",
+						"Bypass",
+						"-Command",
+						command,
+					]
+				: ["/bin/bash", "-lc", command];
+			const result = await executeInContainer(shellCommand, {
 				cwd,
 				onData,
 				signal,
@@ -147,8 +178,8 @@ function createContainerBashOperations(): BashOperations {
 }
 
 export default function (pi: ExtensionAPI) {
-	const readTool = createReadTool(GUEST_WORKSPACE, { operations: createContainerReadOperations() });
-	const bashTool = createBashTool(GUEST_WORKSPACE, {
+	const readTool = createReadTool(guestWorkspace, { operations: createContainerReadOperations() });
+	const bashTool = createBashTool(guestWorkspace, {
 		operations: createContainerBashOperations(),
 		exposeSessionEnvironment: false,
 	});
@@ -157,7 +188,12 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(bashTool);
 
 	pi.on("session_start", async () => {
-		const running = await executeChecked(["/bin/sh", "-c", "test -d /workspace && printf running"]);
+		const running = await executeChecked([
+			guestNode,
+			"-e",
+			"const fs=require('node:fs');if(fs.existsSync(process.argv[1]))process.stdout.write('running');",
+			guestWorkspace,
+		]);
 		if (running.toString("utf8") !== "running") {
 			throw new Error("Issue-analysis Docker sandbox is not ready");
 		}
@@ -172,7 +208,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", (event, ctx) => {
 		const hostLine = `Current working directory: ${ctx.cwd}`;
-		const guestLine = `Current working directory: ${GUEST_WORKSPACE} (isolated Docker workspace)`;
+		const shellNote = isWindows ? "; bash tool commands run in Windows PowerShell" : "";
+		const guestLine = `Current working directory: ${guestWorkspace} (isolated ${sandboxPlatform} Docker workspace${shellNote})`;
 		return {
 			systemPrompt: event.systemPrompt.includes(hostLine)
 				? event.systemPrompt.replace(hostLine, guestLine)
