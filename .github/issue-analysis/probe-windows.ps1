@@ -4,7 +4,7 @@ Set-StrictMode -Version Latest
 Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsArchitecture
 whoami /all
 
-foreach ($command in @("docker", "wsl", "wslconfig", "qemu-system-x86_64")) {
+foreach ($command in @("docker", "dockerd", "wsl", "wslconfig", "qemu-system-x86_64")) {
     $resolved = Get-Command $command -ErrorAction SilentlyContinue
     $commandPath = if ($null -eq $resolved) { "" } else { $resolved.Path }
     Write-Host "$command=$commandPath"
@@ -19,18 +19,30 @@ foreach ($feature in @("Containers", "Microsoft-Hyper-V-All", "VirtualMachinePla
     }
 }
 
-try {
-    docker version
-} catch {
-    Write-Host "docker-version=failed ($($_.Exception.Message))"
+$dockerService = Get-Service docker -ErrorAction SilentlyContinue
+if ($null -ne $dockerService) {
+    Write-Host "docker-service-before=$($dockerService.Status)"
+    if ($dockerService.Status -ne "Running") {
+        Start-Service docker
+        $dockerService.WaitForStatus("Running", [TimeSpan]::FromSeconds(30))
+    }
+    Write-Host "docker-service-after=$($dockerService.Status)"
 }
-try {
-    wsl --status
-} catch {
-    Write-Host "wsl-status=failed ($($_.Exception.Message))"
+docker version
+Write-Host "docker-version-exit=$LASTEXITCODE"
+if ($LASTEXITCODE -eq 0) {
+    docker run --rm --network none mcr.microsoft.com/windows/nanoserver:ltsc2025 cmd.exe /c ver
+    Write-Host "docker-container-exit=$LASTEXITCODE"
 }
 
-$probeUser = "pi_probe_$($env:GITHUB_RUN_ID)_$($env:GITHUB_RUN_ATTEMPT)"
+wsl --version
+Write-Host "wsl-version-exit=$LASTEXITCODE"
+wsl --status
+Write-Host "wsl-status-exit=$LASTEXITCODE"
+wsl --list --verbose
+Write-Host "wsl-list-exit=$LASTEXITCODE"
+
+$probeUser = "pi_probe_$($env:GITHUB_RUN_ATTEMPT)"
 $passwordText = "Aa1!$([Guid]::NewGuid().ToString('N'))"
 $password = ConvertTo-SecureString $passwordText -AsPlainText -Force
 $credential = [pscredential]::new("$env:COMPUTERNAME\$probeUser", $password)
