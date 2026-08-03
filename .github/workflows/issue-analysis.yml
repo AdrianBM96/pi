@@ -65,6 +65,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  capability-probe:
+    if: github.event_name == 'push'
+    name: probe-${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Probe macOS sandbox capabilities
+        if: runner.os == 'macOS'
+        run: bash .github/issue-analysis/probe-macos.sh
+
+      - name: Probe Windows sandbox capabilities
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./.github/issue-analysis/probe-windows.ps1
+
   authorize:
     runs-on: ubuntu-latest
     outputs:
@@ -168,6 +193,10 @@ jobs:
               const testBranch = 'refs/heads/fix/issue-analysis-docker-sandbox';
               if (context.ref !== testBranch || username !== 'mitsuhiko') {
                 console.log(`Ignoring non-test push from @${username} on ${context.ref}`);
+                return;
+              }
+              if (context.payload.head_commit?.message.includes('[probe-only]')) {
+                console.log('Skipping model analysis for a capability-probe-only push');
                 return;
               }
               issueUrl = 'https://github.com/earendil-works/pi/issues/7513';
