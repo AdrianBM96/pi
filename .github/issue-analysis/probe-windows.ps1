@@ -33,6 +33,8 @@ Write-Host "docker-version-exit=$LASTEXITCODE"
 if ($LASTEXITCODE -eq 0) {
     docker run --rm --network none mcr.microsoft.com/windows/nanoserver:ltsc2025 cmd.exe /c ver
     Write-Host "docker-container-exit=$LASTEXITCODE"
+    docker run --rm --network none --isolation hyperv mcr.microsoft.com/windows/nanoserver:ltsc2025 cmd.exe /c ver
+    Write-Host "docker-hyperv-container-exit=$LASTEXITCODE"
 }
 
 wsl --version
