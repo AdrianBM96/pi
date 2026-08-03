@@ -16,9 +16,10 @@ if ! command -v sandbox-exec >/dev/null 2>&1; then
 fi
 
 probe_dir="$(mktemp -d)"
-host_sentinel="$(mktemp)"
+host_sentinel_raw="$(mktemp)"
+host_sentinel="$(cd "$(dirname "$host_sentinel_raw")" && pwd -P)/$(basename "$host_sentinel_raw")"
 profile="$probe_dir/probe.sb"
-trap 'rm -rf "$probe_dir" "$host_sentinel"' EXIT
+trap 'rm -rf "$probe_dir" "$host_sentinel_raw"' EXIT
 printf 'workspace-visible\n' > "$probe_dir/visible.txt"
 printf 'host-inaccessible\n' > "$host_sentinel"
 
