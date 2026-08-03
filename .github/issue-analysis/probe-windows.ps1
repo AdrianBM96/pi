@@ -6,7 +6,8 @@ whoami /all
 
 foreach ($command in @("docker", "wsl", "wslconfig", "qemu-system-x86_64")) {
     $resolved = Get-Command $command -ErrorAction SilentlyContinue
-    Write-Host "$command=$($resolved.Source)"
+    $commandPath = if ($null -eq $resolved) { "" } else { $resolved.Path }
+    Write-Host "$command=$commandPath"
 }
 
 foreach ($feature in @("Containers", "Microsoft-Hyper-V-All", "VirtualMachinePlatform", "Microsoft-Windows-Subsystem-Linux", "Containers-DisposableClientVM")) {
