@@ -48,9 +48,6 @@
 name: Issue Analysis
 
 on:
-  # Temporary branch-only hatch for validating the Docker sandbox before merge.
-  push:
-    branches: [fix/issue-analysis-docker-sandbox]
   issues:
     types: [labeled]
   issue_comment:
@@ -61,35 +58,10 @@ permissions:
   issues: write
 
 concurrency:
-  group: issue-analysis-${{ github.event.issue.number || github.ref }}
+  group: issue-analysis-${{ github.event.issue.number }}
   cancel-in-progress: false
 
 jobs:
-  capability-probe:
-    if: github.event_name == 'push'
-    name: probe-${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Probe macOS sandbox capabilities
-        if: runner.os == 'macOS'
-        run: bash .github/issue-analysis/probe-macos.sh
-
-      - name: Probe Windows sandbox capabilities
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./.github/issue-analysis/probe-windows.ps1
-
   authorize:
     runs-on: ubuntu-latest
     outputs:
@@ -100,7 +72,6 @@ jobs:
       runner_profile: ${{ steps.verify.outputs.runner_profile }}
       issue_url: ${{ steps.verify.outputs.issue_url }}
       issue_number: ${{ steps.verify.outputs.issue_number }}
-      publish_results: ${{ steps.verify.outputs.publish_results }}
     steps:
       - name: Verify sender permission
         id: verify
@@ -133,9 +104,8 @@ jobs:
             const username = context.payload.sender.login;
             let extraInstructions = '';
             let runnerProfile = 'linux';
-            let issueUrl = context.payload.issue?.html_url || '';
-            let issueNumber = context.payload.issue?.number || 0;
-            let publishResults = true;
+            const issueUrl = context.payload.issue?.html_url || '';
+            const issueNumber = context.payload.issue?.number || 0;
 
             core.setOutput('should_run', 'false');
             core.setOutput('extra_instructions', '');
@@ -144,7 +114,6 @@ jobs:
             core.setOutput('runner_profile', runnerProfile);
             core.setOutput('issue_url', '');
             core.setOutput('issue_number', '');
-            core.setOutput('publish_results', 'false');
 
             if (context.eventName === 'issues') {
               if (context.payload.action !== 'labeled' || context.payload.label?.name !== ANALYZE_LABEL) {
@@ -189,23 +158,6 @@ jobs:
 
               runnerProfile = Array.from(resolvedProfiles)[0] || 'linux';
               extraInstructions = body.replace(TRIGGER_RE, ' ').replace(RUN_ON_TAG_RE, ' ').trim();
-            } else if (context.eventName === 'push') {
-              const testBranch = 'refs/heads/fix/issue-analysis-docker-sandbox';
-              if (context.ref !== testBranch || username !== 'mitsuhiko') {
-                console.log(`Ignoring non-test push from @${username} on ${context.ref}`);
-                return;
-              }
-              const commitMessage = context.payload.head_commit?.message || '';
-              if (commitMessage.includes('[probe-only]')) {
-                console.log('Skipping model analysis for a capability-probe-only push');
-                return;
-              }
-              if (commitMessage.includes('[test-windows]')) runnerProfile = 'windows';
-              if (commitMessage.includes('[test-mac]')) runnerProfile = 'mac';
-              issueUrl = 'https://github.com/earendil-works/pi/issues/7513';
-              issueNumber = 7513;
-              publishResults = false;
-              extraInstructions = 'Validate that all model-facing tools execute inside the configured OS sandbox.';
             } else {
               console.log(`Unsupported event: ${context.eventName}`);
               return;
@@ -306,7 +258,6 @@ jobs:
             core.setOutput('runner_profile', runnerProfile);
             core.setOutput('issue_url', issueUrl);
             core.setOutput('issue_number', String(issueNumber));
-            core.setOutput('publish_results', String(publishResults));
 
   analyze:
     needs: authorize
@@ -632,21 +583,6 @@ jobs:
               fs.chmodSync(authPath, 0o600);
             }
 
-      - name: Create host isolation sentinel
-        id: host_sentinel
-        if: needs.authorize.outputs.publish_results != 'true'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-            const sentinel = path.join(
-              process.env.RUNNER_TEMP,
-              `pi-host-isolation-sentinel-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`,
-            );
-            fs.writeFileSync(sentinel, 'host-only-sentinel-not-a-secret\n', { mode: 0o600 });
-            core.setOutput('path', sentinel);
-
       - name: Run pi /is
         id: run_pi
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -657,7 +593,6 @@ jobs:
           PI_ISSUE_ANALYSIS_MACOS_WORKSPACE: ${{ steps.sandbox_macos.outputs.workspace }}
           PI_ISSUE_ANALYSIS_MACOS_NODE: ${{ steps.sandbox_macos.outputs.node }}
           EXTRA_INSTRUCTIONS: ${{ needs.authorize.outputs.extra_instructions }}
-          HOST_SENTINEL_PATH: ${{ steps.host_sentinel.outputs.path }}
           WORKDIR: ${{ steps.workdir.outputs.name }}
         with:
           script: |
@@ -688,16 +623,6 @@ jobs:
             if (process.env.EXTRA_INSTRUCTIONS) {
               prompt += '\n\nAdditional trusted staff instructions:\n';
               prompt += process.env.EXTRA_INSTRUCTIONS;
-            }
-            if (process.env.HOST_SENTINEL_PATH) {
-              prompt += [
-                '',
-                'Sandbox validation for this test run:',
-                `- Confirm the read tool cannot read the host-only sentinel at ${process.env.HOST_SENTINEL_PATH}.`,
-                '- Confirm bash does not expose GH_TOKEN, GITHUB_TOKEN, PI_AUTH_JSON, or PI_CODING_AGENT_DIR.',
-                '- Confirm outbound network access fails.',
-                '- The sentinel contains no secret. Do not attempt to inspect auth.json or real credentials.',
-              ].join('\n');
             }
 
             const outputPath = path.join(outDir, 'output.md');
@@ -768,16 +693,6 @@ jobs:
         env:
           SANDBOX_WORKSPACE: ${{ steps.sandbox_macos.outputs.workspace }}
         run: rm -rf "$SANDBOX_WORKSPACE"
-
-      - name: Remove host isolation sentinel
-        if: always() && steps.host_sentinel.outcome == 'success'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          HOST_SENTINEL_PATH: ${{ steps.host_sentinel.outputs.path }}
-        with:
-          script: |
-            const fs = require('fs');
-            fs.rmSync(process.env.HOST_SENTINEL_PATH, { force: true });
 
       - name: Persist refreshed auth.json
         if: always() && steps.write_auth.outcome == 'success'
@@ -933,7 +848,7 @@ jobs:
             core.setOutput('share_url', `https://pi.dev/session/#${gistId}`);
 
       - name: Comment with session import instructions
-        if: always() && needs.authorize.outputs.publish_results == 'true' && steps.run_pi.outcome == 'success' && steps.gist.outcome == 'success'
+        if: always() && steps.run_pi.outcome == 'success' && steps.gist.outcome == 'success'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           GIST_URL: ${{ steps.gist.outputs.url }}
@@ -1012,17 +927,8 @@ jobs:
               body,
             });
 
-      - name: Report test session
-        if: always() && needs.authorize.outputs.publish_results != 'true' && steps.gist.outcome == 'success'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          SHARE_URL: ${{ steps.gist.outputs.share_url }}
-        with:
-          script: |
-            core.notice(`Issue-analysis sandbox test session: ${process.env.SHARE_URL}`);
-
       - name: Comment on analysis failure
-        if: always() && needs.authorize.outputs.publish_results == 'true' && steps.run_pi.outcome == 'failure'
+        if: always() && steps.run_pi.outcome == 'failure'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           GIST_URL: ${{ steps.gist.outputs.url }}
@@ -1047,7 +953,7 @@ jobs:
             });
 
       - name: Remove trigger label
-        if: always() && needs.authorize.outputs.publish_results == 'true'
+        if: always()
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           ISSUE_NUMBER: ${{ needs.authorize.outputs.issue_number }}
