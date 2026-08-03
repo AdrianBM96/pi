@@ -496,6 +496,14 @@ jobs:
               fs.chmodSync(authPath, 0o600);
             }
 
+      - name: Create host isolation sentinel
+        id: host_sentinel
+        if: needs.authorize.outputs.publish_results != 'true' && needs.authorize.outputs.runner_os == 'linux'
+        run: |
+          sentinel="${RUNNER_TEMP}/pi-host-isolation-sentinel-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'host-only-sentinel-not-a-secret\n' > "$sentinel"
+          echo "path=$sentinel" >> "$GITHUB_OUTPUT"
+
       - name: Run pi /is
         id: run_pi
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -503,6 +511,7 @@ jobs:
           PI_CODING_AGENT_DIR: ${{ runner.temp }}/pi-agent
           PI_ISSUE_ANALYSIS_SANDBOX_CONTAINER: ${{ steps.sandbox.outputs.container }}
           EXTRA_INSTRUCTIONS: ${{ needs.authorize.outputs.extra_instructions }}
+          HOST_SENTINEL_PATH: ${{ steps.host_sentinel.outputs.path }}
           WORKDIR: ${{ steps.workdir.outputs.name }}
         with:
           script: |
@@ -519,6 +528,16 @@ jobs:
             if (process.env.EXTRA_INSTRUCTIONS) {
               prompt += '\n\nAdditional trusted staff instructions:\n';
               prompt += process.env.EXTRA_INSTRUCTIONS;
+            }
+            if (process.env.HOST_SENTINEL_PATH) {
+              prompt += [
+                '',
+                'Sandbox validation for this test run:',
+                `- Confirm the read tool cannot read the host-only sentinel at ${process.env.HOST_SENTINEL_PATH}.`,
+                '- Confirm bash does not expose GH_TOKEN, GITHUB_TOKEN, PI_AUTH_JSON, or PI_CODING_AGENT_DIR.',
+                '- Confirm outbound network access fails.',
+                '- The sentinel contains no secret. Do not attempt to inspect auth.json or real credentials.',
+              ].join('\n');
             }
 
             const outputPath = path.join(outDir, 'output.md');
@@ -574,9 +593,11 @@ jobs:
         env:
           CONTAINER: ${{ steps.sandbox.outputs.container }}
           SANDBOX_WORKSPACE: ${{ steps.sandbox.outputs.workspace }}
+          HOST_SENTINEL_PATH: ${{ steps.host_sentinel.outputs.path }}
         run: |
           docker rm --force "$CONTAINER"
           rm -rf "$SANDBOX_WORKSPACE"
+          if [[ -n "$HOST_SENTINEL_PATH" ]]; then rm -f "$HOST_SENTINEL_PATH"; fi
 
       - name: Persist refreshed auth.json
         if: always() && steps.write_auth.outcome == 'success'

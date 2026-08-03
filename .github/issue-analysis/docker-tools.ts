@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { extname } from "node:path";
 import {
 	type BashOperations,
 	createBashTool,
@@ -129,21 +128,6 @@ function createContainerReadOperations(): ReadOperations {
 				"require('node:fs').accessSync(process.argv[1],require('node:fs').constants.R_OK);",
 				path,
 			]);
-		},
-		detectImageMimeType: async (path) => {
-			switch (extname(path).toLowerCase()) {
-				case ".png":
-					return "image/png";
-				case ".jpg":
-				case ".jpeg":
-					return "image/jpeg";
-				case ".gif":
-					return "image/gif";
-				case ".webp":
-					return "image/webp";
-				default:
-					return null;
-			}
 		},
 	};
 }
