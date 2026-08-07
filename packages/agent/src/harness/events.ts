@@ -12,7 +12,16 @@ export interface RunEndEvent {
 	leafId: string;
 }
 
-export type HarnessEvent = RunStartEvent | RunEndEvent;
+/** Reports a passive event listener failure without affecting harness execution. */
+export interface HandlerErrorEvent {
+	type: "handler_error";
+	kind: "event";
+	event: string;
+	error: string;
+	stack?: string;
+}
+
+export type HarnessEvent = RunStartEvent | RunEndEvent | HandlerErrorEvent;
 export type HarnessEventType = HarnessEvent["type"];
 export type HarnessEventOfType<TType extends HarnessEventType> = Extract<HarnessEvent, { type: TType }>;
 export type HarnessEventListener<TEvent extends HarnessEvent = HarnessEvent> = (event: TEvent) => void | Promise<void>;
@@ -37,6 +46,30 @@ export interface WatchHandle<TSnapshot> {
 export class HarnessEventBus implements Events {
 	private readonly listeners = new Map<HarnessEventType, Set<HarnessEventListener>>();
 	private readonly watchListeners = new Set<(event: HarnessEvent) => void>();
+
+	/** Invoke one passive listener without allowing synchronous throws or asynchronous rejections to escape. */
+	private deliver(listener: HarnessEventListener, event: HarnessEvent): void {
+		try {
+			// Invoke the registered callback; it may return a promise.
+			const result = listener(event);
+			if (result) void result.catch((error: unknown) => this.reportListenerError(event, error));
+		} catch (error) {
+			this.reportListenerError(event, error);
+		}
+	}
+
+	/** Emit handler_error for listener failures, except failures while handling handler_error itself. */
+	private reportListenerError(event: HarnessEvent, error: unknown): void {
+		if (event.type === "handler_error") return;
+		const handlerError: HandlerErrorEvent = {
+			type: "handler_error",
+			kind: "event",
+			event: event.type,
+			error: error instanceof Error ? error.message : String(error),
+			...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
+		};
+		this.emit(handlerError);
+	}
 
 	/**
 	 * Register a listener for future events of one type and return its unsubscribe function.
@@ -66,7 +99,7 @@ export class HarnessEventBus implements Events {
 	emit(event: HarnessEvent): void {
 		// Deliver only to direct listeners registered for this event type.
 		// Async results are not awaited because emit() is synchronous.
-		for (const listener of this.listeners.get(event.type) ?? []) void listener(event);
+		for (const listener of this.listeners.get(event.type) ?? []) this.deliver(listener, event);
 
 		// Deliver every event to each watcher; watch() handles buffering until start().
 		for (const listener of this.watchListeners) listener(event);
@@ -76,7 +109,7 @@ export class HarnessEventBus implements Events {
 		let listener: HarnessEventListener | undefined;
 		let buffered: HarnessEvent[] = [];
 		const receive = (event: HarnessEvent): void => {
-			if (listener) void listener(event);
+			if (listener) this.deliver(listener, event);
 			else buffered.push(event);
 		};
 		this.watchListeners.add(receive);
@@ -89,7 +122,7 @@ export class HarnessEventBus implements Events {
 				while (buffered.length > 0) {
 					const pending = buffered;
 					buffered = [];
-					for (const event of pending) void nextListener(event);
+					for (const event of pending) this.deliver(nextListener, event);
 				}
 				listener = nextListener;
 			},
