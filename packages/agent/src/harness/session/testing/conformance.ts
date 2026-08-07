@@ -411,7 +411,7 @@ export function createSessionBackendConformance(
 		createCase(
 			factory,
 			"records and log",
-			"supports bounded latest-first recovery discovery from generic records",
+			"returns bounded latest operation starts and matching finishes",
 			async (repository) => {
 				const session = await repository.create({ id: "session" });
 				await session.appendRecord(operationStarted("run-old", { lane: "main", kind: "run" }));
@@ -456,36 +456,58 @@ export function createSessionBackendConformance(
 				});
 				await session.appendRecord(operationStarted("navigation-new", { lane: "main", kind: "navigation" }));
 
-				const [latestStart] = await session.findRecords({
-					lane: "main",
-					type: "operation_started",
-					limit: 1,
-				});
-				if (!latestStart) throw new Error("Expected an operation start");
-				const [latestFinish] = await session.findRecords({
-					lane: "main",
-					type: "operation_finished",
-					runId: latestStart.id,
-					limit: 1,
-				});
-				strictEqual(latestStart.id, "navigation-new");
-				strictEqual(latestFinish, undefined);
-
-				let limit = 1;
-				let latestRun: OperationStartedRecord | undefined;
-				while (latestRun === undefined) {
-					const starts = await session.findRecords({
-						lane: "main",
-						type: "operation_started",
-						order: "newestFirst",
-						limit,
-					});
-					latestRun = starts.find((record) => record.intent.kind === "run");
-					if (latestRun !== undefined || starts.length < limit) break;
-					limit *= 2;
+				for (const [limit, expected] of [
+					[1, [["navigation-new", "navigation"]]],
+					[
+						2,
+						[
+							["navigation-new", "navigation"],
+							["compaction-new", "compaction"],
+						],
+					],
+					[
+						4,
+						[
+							["navigation-new", "navigation"],
+							["compaction-new", "compaction"],
+							["run-new", "run"],
+							["navigation", "navigation"],
+						],
+					],
+				] as const) {
+					deepStrictEqual(
+						(
+							await session.findRecords({
+								lane: "main",
+								type: "operation_started",
+								order: "newestFirst",
+								limit,
+							})
+						).map((record) => [record.id, record.intent.kind]),
+						expected,
+					);
 				}
-				strictEqual(limit, 4);
-				strictEqual(latestRun?.id, "run-new");
+
+				deepStrictEqual(
+					await session.findRecords({
+						lane: "main",
+						type: "operation_finished",
+						runId: "navigation-new",
+						limit: 1,
+					}),
+					[],
+				);
+				deepStrictEqual(
+					(
+						await session.findRecords({
+							lane: "main",
+							type: "operation_finished",
+							runId: "run-new",
+							limit: 1,
+						})
+					).map((record) => record.id),
+					["run-new-finished"],
+				);
 			},
 		),
 
