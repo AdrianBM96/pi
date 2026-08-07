@@ -408,77 +408,138 @@ export function createSessionBackendConformance(
 			},
 		),
 
+		createCase(factory, "records and log", "returns recovery start and finish boundaries", async (repository) => {
+			const session = await repository.create({ id: "session" });
+			for (const lane of ["open", "closed", "stale-finish"]) await session.createLane(lane, null);
+
+			const openStart = await session.appendRecord(operationStarted("open-start", { lane: "open", kind: "run" }));
+			const closedStart = await session.appendRecord(
+				operationStarted("closed-start", { lane: "closed", kind: "run" }),
+			);
+			const closedFinish = await session.appendRecord({
+				type: "operation_finished",
+				id: "closed-finish",
+				lane: "closed",
+				runId: closedStart.id,
+				outcome: "completed",
+			});
+			const staleFinish = await session.appendRecord({
+				type: "operation_finished",
+				id: "stale-finish",
+				lane: "stale-finish",
+				runId: "later-start",
+				outcome: "completed",
+			});
+			const laterStart = await session.appendRecord(
+				operationStarted("later-start", { lane: "stale-finish", kind: "navigation" }),
+			);
+
+			for (const [lane, expected] of [
+				["main", []],
+				["open", [[openStart.id, openStart.seq]]],
+				["closed", [[closedStart.id, closedStart.seq]]],
+				["stale-finish", [[laterStart.id, laterStart.seq]]],
+			] as const) {
+				deepStrictEqual(
+					(await session.findRecords({ lane, type: "operation_started", limit: 1 })).map((record) => [
+						record.id,
+						record.seq,
+					]),
+					expected,
+				);
+			}
+			deepStrictEqual(
+				await session.findRecords({ lane: "open", type: "operation_finished", runId: openStart.id, limit: 1 }),
+				[],
+			);
+			deepStrictEqual(
+				(
+					await session.findRecords({
+						lane: "closed",
+						type: "operation_finished",
+						runId: closedStart.id,
+						limit: 1,
+					})
+				).map((record) => [record.id, record.seq]),
+				[[closedFinish.id, closedFinish.seq]],
+			);
+			ok(closedFinish.seq > closedStart.seq);
+			deepStrictEqual(
+				(
+					await session.findRecords({
+						lane: "stale-finish",
+						type: "operation_finished",
+						runId: laterStart.id,
+						limit: 1,
+					})
+				).map((record) => [record.id, record.seq]),
+				[[staleFinish.id, staleFinish.seq]],
+			);
+			ok(staleFinish.seq < laterStart.seq);
+		}),
+
 		createCase(
 			factory,
 			"records and log",
-			"returns bounded latest operation starts and matching finishes",
+			"returns bounded start pages for latest-run recovery",
 			async (repository) => {
 				const session = await repository.create({ id: "session" });
-				await session.appendRecord(operationStarted("run-old", { lane: "main", kind: "run" }));
-				await session.appendRecord({
-					type: "operation_finished",
-					id: "run-old-finished",
-					lane: "main",
-					runId: "run-old",
-					outcome: "completed",
-				});
-				await session.appendRecord(operationStarted("compaction", { lane: "main", kind: "compaction" }));
-				await session.appendRecord({
-					type: "operation_finished",
-					id: "compaction-finished",
-					lane: "main",
-					runId: "compaction",
-					outcome: "completed",
-				});
-				await session.appendRecord(operationStarted("navigation", { lane: "main", kind: "navigation" }));
-				await session.appendRecord({
-					type: "operation_finished",
-					id: "navigation-finished",
-					lane: "main",
-					runId: "navigation",
-					outcome: "completed",
-				});
-				await session.appendRecord(operationStarted("run-new", { lane: "main", kind: "run" }));
-				await session.appendRecord({
-					type: "operation_finished",
-					id: "run-new-finished",
-					lane: "main",
-					runId: "run-new",
-					outcome: "completed",
-				});
-				await session.appendRecord(operationStarted("compaction-new", { lane: "main", kind: "compaction" }));
-				await session.appendRecord({
-					type: "operation_finished",
-					id: "compaction-new-finished",
-					lane: "main",
-					runId: "compaction-new",
-					outcome: "completed",
-				});
-				await session.appendRecord(operationStarted("navigation-new", { lane: "main", kind: "navigation" }));
+				for (const lane of ["latest-run", "buried-run", "no-run"]) await session.createLane(lane, null);
 
-				for (const [limit, expected] of [
-					[1, [["navigation-new", "navigation"]]],
+				const appendCompletedOperation = async (
+					id: string,
+					lane: string,
+					kind: OperationStartedRecord["intent"]["kind"],
+				): Promise<void> => {
+					await session.appendRecord(operationStarted(id, { lane, kind }));
+					await session.appendRecord({
+						type: "operation_finished",
+						id: `${id}-finish`,
+						lane,
+						runId: id,
+						outcome: "completed",
+					});
+				};
+				await appendCompletedOperation("latest-run", "latest-run", "run");
+				await appendCompletedOperation("buried-run", "buried-run", "run");
+				await appendCompletedOperation("buried-compaction", "buried-run", "compaction");
+				await appendCompletedOperation("buried-navigation", "buried-run", "navigation");
+				await appendCompletedOperation("no-run-compaction", "no-run", "compaction");
+				await appendCompletedOperation("no-run-navigation", "no-run", "navigation");
+
+				for (const [lane, limit, expected] of [
+					["latest-run", 1, [["latest-run", "run"]]],
+					["buried-run", 1, [["buried-navigation", "navigation"]]],
 					[
+						"buried-run",
 						2,
 						[
-							["navigation-new", "navigation"],
-							["compaction-new", "compaction"],
+							["buried-navigation", "navigation"],
+							["buried-compaction", "compaction"],
 						],
 					],
 					[
+						"buried-run",
 						4,
 						[
-							["navigation-new", "navigation"],
-							["compaction-new", "compaction"],
-							["run-new", "run"],
-							["navigation", "navigation"],
+							["buried-navigation", "navigation"],
+							["buried-compaction", "compaction"],
+							["buried-run", "run"],
+						],
+					],
+					[
+						"no-run",
+						4,
+						[
+							["no-run-navigation", "navigation"],
+							["no-run-compaction", "compaction"],
 						],
 					],
 				] as const) {
 					deepStrictEqual(
 						(
 							await session.findRecords({
-								lane: "main",
+								lane,
 								type: "operation_started",
 								order: "newestFirst",
 								limit,
@@ -487,27 +548,6 @@ export function createSessionBackendConformance(
 						expected,
 					);
 				}
-
-				deepStrictEqual(
-					await session.findRecords({
-						lane: "main",
-						type: "operation_finished",
-						runId: "navigation-new",
-						limit: 1,
-					}),
-					[],
-				);
-				deepStrictEqual(
-					(
-						await session.findRecords({
-							lane: "main",
-							type: "operation_finished",
-							runId: "run-new",
-							limit: 1,
-						})
-					).map((record) => record.id),
-					["run-new-finished"],
-				);
 			},
 		),
 
