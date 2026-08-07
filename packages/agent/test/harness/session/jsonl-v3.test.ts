@@ -3,10 +3,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { NodeExecutionEnv } from "../../../src/harness/env/nodejs.ts";
+import type { CustomMessage } from "../../../src/harness/messages.ts";
 import { JsonlSessionRepo } from "../../../src/harness/session/index.ts";
 import { JsonlDecodeError } from "../../../src/harness/session/jsonl/errors.ts";
 import { type JsonlV3Header, parseJsonlV3Entry, parseJsonlV3Header } from "../../../src/harness/session/jsonl/v3.ts";
-import type { CustomEntry, ModelChangeEntry, ThinkingLevelEntry } from "../../../src/harness/session/types.ts";
+import type {
+	CustomEntry,
+	MessageEntry,
+	ModelChangeEntry,
+	ThinkingLevelEntry,
+} from "../../../src/harness/session/types.ts";
 
 const tempDirs: string[] = [];
 
@@ -139,6 +145,94 @@ describe("JSONL v3 codec", () => {
 				customType: "extension-marker",
 			} satisfies CustomEntry,
 		});
+	});
+
+	it("normalizes custom message entries as custom-role messages", () => {
+		const timestamp = "2025-01-01T00:00:01.000Z";
+		expect(
+			parseJsonlV3Entry(
+				JSON.stringify({
+					type: "custom_message",
+					id: "custom-message-1",
+					parentId: "message-1",
+					timestamp,
+					customType: "extension-note",
+					content: [{ type: "text", text: "Additional context" }],
+					display: false,
+					details: { source: "extension" },
+				}),
+				2,
+			),
+		).toEqual({
+			ok: true,
+			value: {
+				type: "message",
+				id: "custom-message-1",
+				parentId: "message-1",
+				seq: 2,
+				timestamp: Date.parse(timestamp),
+				message: {
+					role: "custom",
+					customType: "extension-note",
+					content: [{ type: "text", text: "Additional context" }],
+					display: false,
+					details: { source: "extension" },
+					timestamp: Date.parse(timestamp),
+				} satisfies CustomMessage,
+			} satisfies MessageEntry,
+		});
+		expect(
+			parseJsonlV3Entry(
+				JSON.stringify({
+					type: "custom_message",
+					id: "custom-message-2",
+					parentId: "custom-message-1",
+					timestamp,
+					customType: "extension-note",
+					content: "Hidden context",
+					display: true,
+				}),
+				3,
+			),
+		).toEqual({
+			ok: true,
+			value: {
+				type: "message",
+				id: "custom-message-2",
+				parentId: "custom-message-1",
+				seq: 3,
+				timestamp: Date.parse(timestamp),
+				message: {
+					role: "custom",
+					customType: "extension-note",
+					content: "Hidden context",
+					display: true,
+					timestamp: Date.parse(timestamp),
+				} satisfies CustomMessage,
+			} satisfies MessageEntry,
+		});
+	});
+
+	it("rejects invalid custom message fields", () => {
+		const base = {
+			type: "custom_message",
+			id: "custom-message-1",
+			parentId: null,
+			timestamp: "2025-01-01T00:00:01.000Z",
+			customType: "extension-note",
+			content: "context",
+			display: false,
+		};
+		for (const [entry, field] of [
+			[{ ...base, customType: 42 }, "customType"],
+			[{ ...base, content: { text: "context" } }, "content"],
+			[{ ...base, display: "no" }, "display"],
+		] as const) {
+			const result = parseJsonlV3Entry(JSON.stringify(entry), 1);
+			expect(result.ok).toBe(false);
+			if (result.ok) throw new Error(`Expected invalid ${field}`);
+			expect(result.error).toMatchObject({ kind: "schema", message: `has invalid ${field}` });
+		}
 	});
 
 	it("rejects an invalid custom type", () => {
@@ -392,6 +486,66 @@ describe("JSONL v3 read-only normalization", () => {
 				data,
 			} satisfies CustomEntry,
 		]);
+		expect(readFileSync(path, "utf8")).toBe(contents);
+		expect(statSync(path).mtimeMs).toBe(modifiedAt);
+	});
+
+	it("normalizes custom messages and restores main at the resulting message entry", async () => {
+		const root = createTempDir();
+		const path = join(root, "custom-message-v3.jsonl");
+		const headerTimestamp = "2025-01-01T00:00:00.000Z";
+		const customTimestamp = "2025-01-01T00:00:01.000Z";
+		const contents = `${[
+			{
+				type: "session",
+				version: 3,
+				id: "legacy-custom-message-session",
+				timestamp: headerTimestamp,
+				cwd: root,
+			},
+			{
+				type: "custom_message",
+				id: "custom-message-1",
+				parentId: null,
+				timestamp: customTimestamp,
+				customType: "extension-note",
+				content: "Additional context",
+				display: false,
+				details: { source: "extension" },
+			},
+		]
+			.map((entry) => JSON.stringify(entry))
+			.join("\n")}\n`;
+		writeFileSync(path, contents);
+		const fixedMtime = new Date("2025-01-02T00:00:00.000Z");
+		utimesSync(path, fixedMtime, fixedMtime);
+		const modifiedAt = statSync(path).mtimeMs;
+
+		const session = await createRepository(root).open({
+			id: "legacy-custom-message-session",
+			createdAt: Date.parse(headerTimestamp),
+			cwd: root,
+			path,
+			modifiedAt,
+			sourceFormat: 3,
+		});
+
+		expect(await session.getLanes()).toEqual([{ lane: "main", leafId: "custom-message-1" }]);
+		expect(await session.getEntry("custom-message-1")).toEqual({
+			type: "message",
+			id: "custom-message-1",
+			parentId: null,
+			seq: 1,
+			timestamp: Date.parse(customTimestamp),
+			message: {
+				role: "custom",
+				customType: "extension-note",
+				content: "Additional context",
+				display: false,
+				details: { source: "extension" },
+				timestamp: Date.parse(customTimestamp),
+			} satisfies CustomMessage,
+		} satisfies MessageEntry);
 		expect(readFileSync(path, "utf8")).toBe(contents);
 		expect(statSync(path).mtimeMs).toBe(modifiedAt);
 	});

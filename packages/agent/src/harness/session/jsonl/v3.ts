@@ -1,4 +1,5 @@
 import type { AgentMessage } from "../../../types.ts";
+import type { CustomMessage } from "../../messages.ts";
 import { err, ok, type Result } from "../../types.ts";
 import type { SessionMutation } from "../state.ts";
 import type { CustomEntry, Entry, MessageEntry, ModelChangeEntry, ThinkingLevelEntry } from "../types.ts";
@@ -39,6 +40,19 @@ function requireNullableString(value: unknown, field: string): string | null {
 		throw new JsonlDecodeError("schema", `has invalid ${field}`);
 	}
 	return value;
+}
+
+function requireBoolean(value: unknown, field: string): boolean {
+	if (typeof value !== "boolean") throw new JsonlDecodeError("schema", `has invalid ${field}`);
+	return value;
+}
+
+function requireCustomMessageContent(value: unknown): CustomMessage["content"] {
+	if (typeof value !== "string" && !Array.isArray(value)) {
+		throw new JsonlDecodeError("schema", "has invalid content");
+	}
+	// TODO(J6): Validate legacy custom-message content blocks with the shared AgentMessage schema.
+	return value as CustomMessage["content"];
 }
 
 function parseTimestamp(value: unknown): { source: string; milliseconds: number } {
@@ -127,6 +141,19 @@ export function parseJsonlV3Entry(line: string, seq: number): Result<Entry, Json
 					customType: requireString(value.customType, "customType"),
 					...(value.data === undefined ? {} : { data: value.data }),
 				} satisfies CustomEntry;
+			case "custom_message":
+				return {
+					...base,
+					type: "message",
+					message: {
+						role: "custom",
+						customType: requireString(value.customType, "customType"),
+						content: requireCustomMessageContent(value.content),
+						display: requireBoolean(value.display, "display"),
+						...(value.details === undefined ? {} : { details: value.details }),
+						timestamp: base.timestamp,
+					} satisfies CustomMessage,
+				} satisfies MessageEntry;
 			default:
 				// TODO(J4): Decode and normalize the remaining supported coding-agent v3 entry types.
 				throw new JsonlDecodeError("schema", `has unsupported entry type ${String(value.type)}`);
