@@ -1,7 +1,7 @@
 import type { AgentMessage } from "../../../types.ts";
 import { err, ok, type Result } from "../../types.ts";
 import type { SessionMutation } from "../state.ts";
-import type { Entry, MessageEntry, ModelChangeEntry, ThinkingLevelEntry } from "../types.ts";
+import type { CustomEntry, Entry, MessageEntry, ModelChangeEntry, ThinkingLevelEntry } from "../types.ts";
 import { JsonlDecodeError } from "./errors.ts";
 import type { JsonlSessionMetadata } from "./types.ts";
 
@@ -120,6 +120,13 @@ export function parseJsonlV3Entry(line: string, seq: number): Result<Entry, Json
 					type: "thinking_level_change",
 					thinkingLevel: requireString(value.thinkingLevel, "thinkingLevel"),
 				} satisfies ThinkingLevelEntry;
+			case "custom":
+				return {
+					...base,
+					type: "custom",
+					customType: requireString(value.customType, "customType"),
+					...(value.data === undefined ? {} : { data: value.data }),
+				} satisfies CustomEntry;
 			default:
 				// TODO(J4): Decode and normalize the remaining supported coding-agent v3 entry types.
 				throw new JsonlDecodeError("schema", `has unsupported entry type ${String(value.type)}`);
