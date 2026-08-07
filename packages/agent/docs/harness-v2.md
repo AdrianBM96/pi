@@ -1619,6 +1619,44 @@ interface SessionStorage {
 }
 ```
 
+#### Required record-query access paths
+
+Backends may choose any physical representation, but `findRecords()` must efficiently support these sequence-ordered logical access paths. `afterSeq`, `order`, and `limit` apply to every path.
+
+| Logical path | Equality filters |
+|---|---|
+| Session records | none |
+| Lane records | `lane` |
+| Record type | `type` |
+| Lane record type | `lane`, `type` |
+| Operation records | `runId` |
+| Operation starts by kind | `type: "operation_started"`, `operationKind`, optionally `lane` |
+
+For these paths:
+
+- Sequence bounds are applied before opaque payload decoding, where applicable.
+- `limit` stops the scan once enough matching records have been selected.
+- Lane paths do not scan records from other lanes, and type paths do not scan unrelated record types.
+- The operation lookup key normalizes `OperationStartedRecord.id` and the `runId` property of operation-owned records to the same identity. Records without an operation identity are absent from that path.
+- A query combining additional filters uses the narrowest applicable path and may apply the remaining predicates as residual filters. The contract does not require a separate access path for every combination of optional fields.
+
+Recovery relies on these bounded shapes:
+
+```ts
+// Suspended operation: only this lane's records after its start.
+{ lane, afterSeq: started.seq, order: "oldestFirst" }
+
+// Idle recovery anchor: the newest run-kind start on this lane.
+{ lane, type: "operation_started", operationKind: "run", limit: 1 }
+
+// Idle queue state: one query for each queue record type after the anchor.
+// afterSeq is omitted when the lane has no prior run.
+{ lane, type: "queue_enqueued", afterSeq: latestRunSeq, order: "oldestFirst" }
+{ lane, type: "queue_cancelled", afterSeq: latestRunSeq, order: "oldestFirst" }
+```
+
+Their work is bounded by relevant session, lane, type, or operation history rather than unrelated records. `findOpenOperations()` remains a separate current-state projection and is not implemented as a historical record scan.
+
 Contract rules, all backends:
 
 - One monotonic `seq` across entries, records, facts, and lane moves.
@@ -1762,7 +1800,7 @@ Case 4 — a branch still ends at an entry that has children.
 
 Stale branches (no lane resolves through them) are kept.
 
-Every restore query is an index seek plus a bounded scan: a lane's open operation via `(lane, type, seq)`, its last run-kind start via `(lane, type, op_kind, seq)`, its records above the operation via the same index, its own entries via the read plan from its leaf. No query touches another lane's traffic.
+Every restore query uses a required bounded access path: a lane's open operation comes from its current-state projection, its last run-kind start uses the operation-start-kind path, records above the operation use the lane path, idle queue records use the lane-type path, and its own entries use the branch read plan from its leaf. No query touches another lane's traffic.
 
 ## 14. Agent-loop building blocks
 
