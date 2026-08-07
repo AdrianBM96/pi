@@ -82,7 +82,7 @@ describe("SQLite branch queries", () => {
 		} finally {
 			await invalidJsonDb.close();
 		}
-		expect(await session.findEntriesOnBranch({ start: leafId, customType: "other" })).toEqual([]);
+		expect(await session.findEntriesOnBranch({ start: leafId, type: "custom", customType: "other" })).toEqual([]);
 	});
 
 	it("does not validate ancestors beyond newest-first stop bounds", async () => {

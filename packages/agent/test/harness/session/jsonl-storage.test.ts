@@ -178,7 +178,9 @@ describe("JSONL v4 per-session storage", () => {
 				})
 			).map((entry) => entry.id),
 		).toEqual(["compaction", "branch-summary"]);
-		expect((await restored.findEntries({ customType: "note" })).map((entry) => entry.id)).toEqual(["custom"]);
+		expect((await restored.findEntries({ type: "custom", customType: "note" })).map((entry) => entry.id)).toEqual([
+			"custom",
+		]);
 		expect(await restored.getStats()).toEqual({
 			messageCount: 3,
 			cachedTokens: 0,

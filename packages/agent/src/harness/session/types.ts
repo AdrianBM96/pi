@@ -229,12 +229,16 @@ interface EntryQueryBase {
 export type EntryQuery = EntryQueryBase &
 	(
 		| {
-				type?: "custom";
-				customType?: string;
+				type?: never;
+				customType?: never;
 		  }
 		| {
 				type: Exclude<Entry["type"], "custom">;
 				customType?: never;
+		  }
+		| {
+				type: "custom";
+				customType?: string;
 		  }
 	);
 

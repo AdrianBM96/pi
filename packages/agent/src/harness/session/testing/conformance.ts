@@ -277,9 +277,14 @@ export function createSessionBackendConformance(
 					await entryIds(session.findEntries({ order: "oldestFirst", cursor: { afterSeq: 2 }, limit: 2 })),
 					["compact", "new-note"],
 				);
-				deepStrictEqual(await entryIds(session.findEntries({ customType: "note" })), ["new-note", "old-note"]);
+				deepStrictEqual(await entryIds(session.findEntries({ type: "custom", customType: "note" })), [
+					"new-note",
+					"old-note",
+				]);
 				deepStrictEqual(
-					await entryIds(session.findEntriesOnBranch({ start: "tail", customType: "note", limit: 1 })),
+					await entryIds(
+						session.findEntriesOnBranch({ start: "tail", type: "custom", customType: "note", limit: 1 }),
+					),
 					["new-note"],
 				);
 				deepStrictEqual(
