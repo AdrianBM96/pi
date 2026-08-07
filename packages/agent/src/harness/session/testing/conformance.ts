@@ -703,15 +703,38 @@ export function createSessionBackendConformance(
 			const metadata = await session.getMetadata();
 			const data = { nested: { value: 1 } };
 			await session.appendEntry<CustomEntry>({ type: "custom", id: "custom", customType: "note", data }, "main");
+			const committedRecord = await session.appendRecord({
+				type: "operation_started",
+				id: "run",
+				lane: "main",
+				sourceLeafId: "custom",
+				intent: { kind: "run", originalPrompt: [createUserMessage("original")], initialMessages: [] },
+			});
+			const expectedRecord = structuredClone(committedRecord);
+
 			data.nested.value = 50;
 			const read = await session.getEntry("custom");
 			if (read?.type !== "custom") throw new Error("Expected custom entry");
 			(read.data as { nested: { value: number } }).nested.value = 99;
+			const [recordRead] = await session.findRecords({ type: "operation_started" });
+			if (recordRead?.intent.kind !== "run") throw new Error("Expected operation-start record");
+			deepStrictEqual(recordRead, expectedRecord);
+			recordRead.intent.originalPrompt.push(createUserMessage("mutated record read"));
 			const readMetadata = await session.getMetadata();
 			readMetadata.id = "changed";
 			const log = await session.getLog();
 			if (log[0]?.kind !== "entry" || log[0].entry.type !== "custom") throw new Error("Expected entry log");
 			(log[0].entry.data as { nested: { value: number } }).nested.value = 100;
+			const recordLog = log.find((item) => item.kind === "record");
+			if (
+				recordLog?.kind !== "record" ||
+				recordLog.record.type !== "operation_started" ||
+				recordLog.record.intent.kind !== "run"
+			) {
+				throw new Error("Expected operation-start record in log");
+			}
+			deepStrictEqual(recordLog.record, expectedRecord);
+			recordLog.record.intent.originalPrompt.push(createUserMessage("mutated record log"));
 
 			deepStrictEqual(await session.getMetadata(), metadata);
 			deepStrictEqual(await session.getEntry("custom"), {
@@ -723,6 +746,7 @@ export function createSessionBackendConformance(
 				seq: 1,
 				timestamp: read.timestamp,
 			});
+			deepStrictEqual(await session.findRecords({ type: "operation_started" }), [expectedRecord]);
 		}),
 
 		createCase(factory, "entries and lanes", "validates lane lifecycle and targets", async (repository) => {

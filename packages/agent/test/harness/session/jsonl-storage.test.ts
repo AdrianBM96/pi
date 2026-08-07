@@ -403,11 +403,6 @@ describe("JSONL v4 per-session storage", () => {
 			totalTokens: 150,
 			costTotal: 15,
 		});
-
-		const started = starts.find((record) => record.intent.kind === "run");
-		if (started?.intent.kind !== "run") throw new Error("Expected restored run record");
-		started.intent.originalPrompt.push(userMessage("mutated"));
-		expect(await restored.findRecords({ order: "oldestFirst" })).toEqual(records);
 	});
 
 	it("persists concurrent cross-lane writes in shared sequence order", async () => {
