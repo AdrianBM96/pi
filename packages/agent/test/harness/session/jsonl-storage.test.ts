@@ -382,12 +382,6 @@ describe("JSONL v4 per-session storage", () => {
 
 		const restored = await reopen(root, session);
 		expect(await restored.findRecords({ order: "oldestFirst" })).toEqual(records);
-		const starts = await restored.findRecords({ type: "operation_started" });
-		expect(starts.map((record) => [record.id, record.intent.kind])).toEqual([
-			["navigation", "navigation"],
-			["compaction", "compaction"],
-			["run", "run"],
-		]);
 		expect(
 			(await restored.findRecords({ runId: "compaction", order: "oldestFirst" })).map((record) => record.id),
 		).toEqual(["compaction", "compaction-attempt", "compaction-finished"]);

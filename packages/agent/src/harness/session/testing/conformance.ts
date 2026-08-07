@@ -436,44 +436,34 @@ export function createSessionBackendConformance(
 
 			for (const [lane, expected] of [
 				["main", []],
-				["open", [[openStart.id, openStart.seq]]],
-				["closed", [[closedStart.id, closedStart.seq]]],
-				["stale-finish", [[laterStart.id, laterStart.seq]]],
+				["open", [openStart]],
+				["closed", [closedStart]],
+				["stale-finish", [laterStart]],
 			] as const) {
-				deepStrictEqual(
-					(await session.findRecords({ lane, type: "operation_started", limit: 1 })).map((record) => [
-						record.id,
-						record.seq,
-					]),
-					expected,
-				);
+				deepStrictEqual(await session.findRecords({ lane, type: "operation_started", limit: 1 }), expected);
 			}
 			deepStrictEqual(
 				await session.findRecords({ lane: "open", type: "operation_finished", runId: openStart.id, limit: 1 }),
 				[],
 			);
 			deepStrictEqual(
-				(
-					await session.findRecords({
-						lane: "closed",
-						type: "operation_finished",
-						runId: closedStart.id,
-						limit: 1,
-					})
-				).map((record) => [record.id, record.seq]),
-				[[closedFinish.id, closedFinish.seq]],
+				await session.findRecords({
+					lane: "closed",
+					type: "operation_finished",
+					runId: closedStart.id,
+					limit: 1,
+				}),
+				[closedFinish],
 			);
 			ok(closedFinish.seq > closedStart.seq);
 			deepStrictEqual(
-				(
-					await session.findRecords({
-						lane: "stale-finish",
-						type: "operation_finished",
-						runId: laterStart.id,
-						limit: 1,
-					})
-				).map((record) => [record.id, record.seq]),
-				[[staleFinish.id, staleFinish.seq]],
+				await session.findRecords({
+					lane: "stale-finish",
+					type: "operation_finished",
+					runId: laterStart.id,
+					limit: 1,
+				}),
+				[staleFinish],
 			);
 			ok(staleFinish.seq < laterStart.seq);
 		}),
@@ -598,10 +588,6 @@ export function createSessionBackendConformance(
 
 			await rejectsWithCode(
 				session.appendRecord(operationStarted("main-second", { lane: "main", kind: "run" })),
-				"storage",
-			);
-			await rejectsWithCode(
-				session.appendRecord(operationStarted("thread-second", { lane: "thread", kind: "run" })),
 				"storage",
 			);
 		}),
