@@ -1,7 +1,7 @@
 import type { AgentMessage } from "../../../types.ts";
 import { err, ok, type Result } from "../../types.ts";
 import type { SessionMutation } from "../state.ts";
-import type { Entry } from "../types.ts";
+import type { Entry, MessageEntry, ModelChangeEntry, ThinkingLevelEntry } from "../types.ts";
 import { JsonlDecodeError } from "./errors.ts";
 import type { JsonlSessionMetadata } from "./types.ts";
 
@@ -92,20 +92,38 @@ export function parseJsonlV3Header(line: string): Result<JsonlV3Header, JsonlDec
 export function parseJsonlV3Entry(line: string, seq: number): Result<Entry, JsonlDecodeError> {
 	return decodeResult(() => {
 		const value = parseObject(line);
-		// TODO(J4): Decode and normalize every supported coding-agent v3 entry type.
-		if (value.type !== "message") {
-			throw new JsonlDecodeError("schema", `has unsupported entry type ${String(value.type)}`);
-		}
-		if (!isObject(value.message)) throw new JsonlDecodeError("schema", "has invalid message");
-		return {
-			type: "message",
+		const base = {
 			id: requireString(value.id, "id"),
 			parentId: requireNullableString(value.parentId, "parentId"),
 			seq,
 			timestamp: parseTimestamp(value.timestamp).milliseconds,
-			// TODO(J6): Validate legacy message payloads with the shared AgentMessage schema.
-			message: value.message as unknown as AgentMessage,
 		};
+		switch (value.type) {
+			case "message":
+				if (!isObject(value.message)) throw new JsonlDecodeError("schema", "has invalid message");
+				return {
+					...base,
+					type: "message",
+					// TODO(J6): Validate legacy message payloads with the shared AgentMessage schema.
+					message: value.message as unknown as AgentMessage,
+				} satisfies MessageEntry;
+			case "model_change":
+				return {
+					...base,
+					type: "model_change",
+					provider: requireString(value.provider, "provider"),
+					modelId: requireString(value.modelId, "modelId"),
+				} satisfies ModelChangeEntry;
+			case "thinking_level_change":
+				return {
+					...base,
+					type: "thinking_level_change",
+					thinkingLevel: requireString(value.thinkingLevel, "thinkingLevel"),
+				} satisfies ThinkingLevelEntry;
+			default:
+				// TODO(J4): Decode and normalize the remaining supported coding-agent v3 entry types.
+				throw new JsonlDecodeError("schema", `has unsupported entry type ${String(value.type)}`);
+		}
 	});
 }
 
