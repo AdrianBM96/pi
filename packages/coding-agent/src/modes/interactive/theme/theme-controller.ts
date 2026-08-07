@@ -1,5 +1,6 @@
 import type { TUI } from "@earendil-works/pi-tui";
 import type { SettingsManager } from "../../../core/settings-manager.ts";
+import { onHighlightLanguageLoad } from "../../../utils/syntax-highlight.ts";
 import {
 	detectTerminalBackgroundFromEnv,
 	detectTerminalBackgroundTheme,
@@ -24,6 +25,9 @@ export class InteractiveThemeController {
 	private activeThemeName: string | undefined;
 	private autoSyncEnabled = false;
 	private terminalColorSchemeUnsubscribe: (() => void) | undefined;
+	private highlightLanguageLoadUnsubscribe: (() => void) | undefined;
+	private highlightLanguageRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+	private highlightLanguageGlobalRefreshPending = false;
 
 	constructor(ui: TUI, settingsManager: SettingsManager, showError: (message: string) => void, onChanged: () => void) {
 		this.ui = ui;
@@ -32,6 +36,21 @@ export class InteractiveThemeController {
 		this.onChanged = onChanged;
 		this.activeThemeName = resolveThemeSetting(this.settingsManager.getThemeSetting(), this.terminalTheme);
 		initTheme(this.activeThemeName, true);
+		this.highlightLanguageLoadUnsubscribe = onHighlightLanguageLoad((event) => {
+			if ("error" in event) {
+				const message = event.error instanceof Error ? event.error.message : String(event.error);
+				this.showError(`Failed to load syntax highlighting language "${event.language}": ${message}`);
+				return;
+			}
+			this.highlightLanguageGlobalRefreshPending ||= event.requiresGlobalRefresh;
+			if (this.highlightLanguageRefreshTimer !== undefined) return;
+			this.highlightLanguageRefreshTimer = setTimeout(() => {
+				this.highlightLanguageRefreshTimer = undefined;
+				if (this.highlightLanguageGlobalRefreshPending) this.ui.invalidate();
+				this.highlightLanguageGlobalRefreshPending = false;
+				this.ui.requestRender();
+			}, 0);
+		});
 		this.bindTerminalColorSchemeListener();
 	}
 
@@ -90,6 +109,17 @@ export class InteractiveThemeController {
 
 	disableAutoSync(): void {
 		this.setAutoSync(false);
+	}
+
+	dispose(): void {
+		this.disableAutoSync();
+		this.terminalColorSchemeUnsubscribe?.();
+		this.terminalColorSchemeUnsubscribe = undefined;
+		this.highlightLanguageLoadUnsubscribe?.();
+		this.highlightLanguageLoadUnsubscribe = undefined;
+		if (this.highlightLanguageRefreshTimer !== undefined) clearTimeout(this.highlightLanguageRefreshTimer);
+		this.highlightLanguageRefreshTimer = undefined;
+		this.highlightLanguageGlobalRefreshPending = false;
 	}
 
 	getTerminalTheme(): TerminalTheme {

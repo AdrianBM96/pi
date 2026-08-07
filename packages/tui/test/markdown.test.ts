@@ -38,6 +38,28 @@ function stripAnsi(line: string): string {
 
 describe("Markdown component", () => {
 	describe("Transforms", () => {
+		it("invalidates its cache when a code language finishes loading", () => {
+			const callbacks: Array<() => void> = [];
+			let highlightCalls = 0;
+			const markdown = new Markdown("```example\ncode\n```", 0, 0, {
+				...defaultMarkdownTheme,
+				highlightCode: (_code, _lang, onLanguageReady) => {
+					highlightCalls++;
+					if (onLanguageReady) callbacks.push(onLanguageReady);
+					return ["code"];
+				},
+			});
+
+			markdown.render(80);
+			markdown.render(80);
+			assert.strictEqual(highlightCalls, 1);
+
+			callbacks[0]?.();
+			markdown.render(80);
+			assert.strictEqual(highlightCalls, 2);
+			assert.strictEqual(callbacks[0], callbacks[1]);
+		});
+
 		it("caches transformed Markdown by source and available width", () => {
 			const calls: Array<{ source: string; availableWidth: number }> = [];
 			const markdown = new Markdown("source", 2, 0, defaultMarkdownTheme, undefined, {

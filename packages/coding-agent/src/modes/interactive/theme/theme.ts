@@ -15,7 +15,9 @@ import { Compile } from "typebox/compile";
 import { getCustomThemesDir, getThemesDir } from "../../../config.ts";
 import type { SourceInfo } from "../../../core/source-info.ts";
 import { closeWatcher, watchWithErrorHandler } from "../../../utils/fs-watch.ts";
-import { highlight, supportsLanguage } from "../../../utils/syntax-highlight.ts";
+import { highlight, requestHighlightLanguage } from "../../../utils/syntax-highlight.ts";
+
+export { getLanguageFromPath } from "../../../utils/syntax-highlight.ts";
 
 // ============================================================================
 // Types & Schema
@@ -1153,14 +1155,19 @@ function getCliHighlightTheme(t: Theme): CliHighlightTheme {
 	return cachedCliHighlightTheme;
 }
 
+export interface HighlightCodeOptions {
+	onLanguageReady?: () => void;
+}
+
 /**
  * Highlight code with syntax coloring based on file extension or language.
  * Returns array of highlighted lines.
  */
-export function highlightCode(code: string, lang?: string): string[] {
-	// Validate language before highlighting to avoid stderr spam from cli-highlight
-	const validLang = lang && supportsLanguage(lang) ? lang : undefined;
-	// Skip highlighting when no valid language is specified. cli-highlight's
+export function highlightCode(code: string, lang?: string, options: HighlightCodeOptions = {}): string[] {
+	// Validate language before highlighting to avoid stderr spam from highlight.js.
+	// Uncommon languages start loading in the background and render plainly once.
+	const validLang = lang ? requestHighlightLanguage(lang, options.onLanguageReady) : undefined;
+	// Skip highlighting when no valid language is specified. highlight.js's
 	// auto-detection is unreliable and can misidentify prose as AppleScript,
 	// LiveCodeServer, etc., coloring random English words as keywords.
 	if (!validLang) {
@@ -1174,79 +1181,8 @@ export function highlightCode(code: string, lang?: string): string[] {
 	try {
 		return highlight(code, opts).split("\n");
 	} catch {
-		return code.split("\n");
+		return code.split("\n").map((line) => theme.fg("mdCodeBlock", line));
 	}
-}
-
-/**
- * Get language identifier from file path extension.
- */
-export function getLanguageFromPath(filePath: string): string | undefined {
-	const ext = filePath.split(".").pop()?.toLowerCase();
-	if (!ext) return undefined;
-
-	const extToLang: Record<string, string> = {
-		ts: "typescript",
-		tsx: "typescript",
-		js: "javascript",
-		jsx: "javascript",
-		mjs: "javascript",
-		cjs: "javascript",
-		py: "python",
-		rb: "ruby",
-		rs: "rust",
-		go: "go",
-		java: "java",
-		kt: "kotlin",
-		swift: "swift",
-		c: "c",
-		h: "c",
-		cpp: "cpp",
-		cc: "cpp",
-		cxx: "cpp",
-		hpp: "cpp",
-		cs: "csharp",
-		php: "php",
-		sh: "bash",
-		bash: "bash",
-		zsh: "bash",
-		fish: "fish",
-		ps1: "powershell",
-		sql: "sql",
-		html: "html",
-		htm: "html",
-		css: "css",
-		scss: "scss",
-		sass: "sass",
-		less: "less",
-		json: "json",
-		yaml: "yaml",
-		yml: "yaml",
-		toml: "toml",
-		xml: "xml",
-		md: "markdown",
-		markdown: "markdown",
-		dockerfile: "dockerfile",
-		makefile: "makefile",
-		cmake: "cmake",
-		lua: "lua",
-		perl: "perl",
-		r: "r",
-		scala: "scala",
-		clj: "clojure",
-		ex: "elixir",
-		exs: "elixir",
-		erl: "erlang",
-		hs: "haskell",
-		ml: "ocaml",
-		vim: "vim",
-		graphql: "graphql",
-		proto: "protobuf",
-		tf: "hcl",
-		hcl: "hcl",
-	};
-
-	return extToLang[ext];
 }
 
 export function getMarkdownTheme(): MarkdownTheme {
@@ -1265,26 +1201,7 @@ export function getMarkdownTheme(): MarkdownTheme {
 		italic: (text: string) => theme.italic(text),
 		underline: (text: string) => theme.underline(text),
 		strikethrough: (text: string) => chalk.strikethrough(text),
-		highlightCode: (code: string, lang?: string): string[] => {
-			// Validate language before highlighting to avoid stderr spam from cli-highlight
-			const validLang = lang && supportsLanguage(lang) ? lang : undefined;
-			// Skip highlighting when no valid language is specified. cli-highlight's
-			// auto-detection is unreliable and can misidentify prose as AppleScript,
-			// LiveCodeServer, etc., coloring random English words as keywords.
-			if (!validLang) {
-				return code.split("\n").map((line) => theme.fg("mdCodeBlock", line));
-			}
-			const opts = {
-				language: validLang,
-				ignoreIllegals: true,
-				theme: getCliHighlightTheme(theme),
-			};
-			try {
-				return highlight(code, opts).split("\n");
-			} catch {
-				return code.split("\n").map((line) => theme.fg("mdCodeBlock", line));
-			}
-		},
+		highlightCode: (code, lang, onLanguageReady) => highlightCode(code, lang, { onLanguageReady }),
 	};
 }
 
