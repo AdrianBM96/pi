@@ -4,6 +4,7 @@ import {
 	type Entry,
 	type EntryQuery,
 	type ForkOptions,
+	type LanePointer,
 	type LaneRecord,
 	type LogItem,
 	type LogOptions,
@@ -427,8 +428,12 @@ class SqliteSessionStorage implements SessionStorage<SqliteSessionMetadata> {
 		return this.metadata.id === sessionId;
 	}
 
-	async getLanes(): Promise<{ lane: string; leafId: string | null }[]> {
-		return readLanes(this.db, this.metadata.id).map((row) => ({ lane: row.lane, leafId: row.leaf_id }));
+	async getLanes(): Promise<LanePointer[]> {
+		return readLanes(this.db, this.metadata.id).map((row) => ({
+			lane: row.lane,
+			leafId: row.leaf_id,
+			openOperationId: row.open_operation_id,
+		}));
 	}
 
 	async createLane(lane: string, at: string | null): Promise<void> {

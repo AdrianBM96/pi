@@ -49,6 +49,7 @@ export function readRecordRows(
 		lane?: string;
 		type?: string;
 		runId?: string;
+		operationKind?: string;
 		afterSeq?: number;
 		order?: "newestFirst" | "oldestFirst";
 		limit?: number;
@@ -58,6 +59,7 @@ export function readRecordRows(
 	if (query.lane !== undefined) predicates.push(sql`lane = ${query.lane}`);
 	if (query.type !== undefined) predicates.push(sql`type = ${query.type}`);
 	if (query.runId !== undefined) predicates.push(sql`run_id = ${query.runId}`);
+	if (query.operationKind !== undefined) predicates.push(sql`op_kind = ${query.operationKind}`);
 	if (query.afterSeq !== undefined) predicates.push(sql`seq > ${query.afterSeq}`);
 	const direction = query.order === "oldestFirst" ? sql`ASC` : sql`DESC`;
 	const limit = query.limit === undefined ? sql`` : sql` LIMIT ${query.limit}`;

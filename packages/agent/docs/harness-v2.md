@@ -645,17 +645,15 @@ Deferred assistant messages carry a handle, not content; they project to nothing
 
 Opening a session restores every lane independently. Restore reads; it never appends and never starts effects.
 
-Recovery derives discovery state from bounded latest-first queries:
+Recovery starts with indexed discovery, not a full log scan:
 
-1. `findRecords({ lane, type: "operation_started", limit: 1 })` returns the latest start. A second query for its `runId` and type `operation_finished` decides whether that start remains open; a finish closes it only when its `seq` is newer. Because storage rejects a second start while one is open and replay validates the same invariant, no older start can remain open. No start, or a latest start with a later finish, means idle; otherwise the lane is suspended.
-2. For an idle lane, query `operation_started` records newest first with limits 1, 2, 4, and so on until a returned record has intent kind `run` or fewer than `limit` records are returned. The newest run found bounds filtered `queue_enqueued` / `queue_cancelled` queries that reconstruct pending `nextRun` items. With no prior run, the same type-filtered queries read only pre-run queue state.
+1. `getLanes()` returns each lane's `openOperationId`. `null` means idle; otherwise `findRecords({ lane, type: "operation_started", runId: openOperationId, limit: 1 })` loads and validates the suspended operation's start. Storage updates the projection atomically with the start or finish record, rejects a second start while one is open, and validates the same invariant during replay.
+2. For an idle lane, one indexed `findRecords({ lane, type: "operation_started", operationKind: "run", limit: 1 })` query finds the newest run start, then filtered `queue_enqueued` / `queue_cancelled` queries above it reconstruct pending `nextRun` items. With no prior run, the same type-filtered queries read only pre-run queue state; unrelated usage adjustments are never scanned.
 3. For a suspended lane, the open operation selects two bounded payload reads:
    - **The lane's records** since that `operation_started`. Everything after the finish of the previous operation is irrelevant history.
    - **The lane's own entries**: the path from its leaf back to the operation's anchor (`sourceLeafId`). These are exactly the entries this operation appended.
 
-**Potential lookup-efficiency gap:** finding the latest run is linear in the number of consecutive non-run operation starts after it. Geometric limits return fewer than twice that many starts, and normal histories have only a few intervening compaction or navigation operations. The worst case remains a lane with many non-run operations and no recent run; backends may optimize that case internally if measurements justify it.
-
-Reduction may additionally perform point lookups for provisioned entry ids and bounded branch lookups for effective model, thinking, and active-tool configuration at the operation anchor. After discovery identifies the recovery boundary, these reads are bounded by the open operation or the still-relevant idle queue, not by another lane's activity.
+Reduction may additionally perform point lookups for provisioned entry ids. Every scan is bounded by the open operation or the still-relevant idle queue, not by total session history or another lane's activity.
 
 An idle lane's remaining state is pending next-run queue items. Next-run messages can be enqueued at any time; only the acceptance of a run consumes them — compaction and navigation pass over the queue. Pending items are the `queue_enqueued` records after the lane's most recent run-kind `operation_started` whose provisioned entries do not exist and that no `queue_cancelled` retracts. Items a run captured are listed in its intent's `initialMessages`, so a captured-but-unappended item is completed by that run's recovery and is never offered to the next run.
 
@@ -1539,7 +1537,7 @@ class Session implements SessionTree {          // bound to "main"
   view(lane: string): SessionTree;
 
   // Lanes — permanent named pointers. Durable via storage (section 13).
-  getLanes(): Promise<{ lane: string; leafId: string | null }[]>;
+  getLanes(): Promise<LanePointer[]>;
   createLane(lane: string, at: string | null): Promise<void>;   // rejects existing names
   moveLane(lane: string, to: string | null): Promise<void>;
 
@@ -1560,6 +1558,12 @@ class Session implements SessionTree {          // bound to "main"
   getLog(options?: { afterSeq?: number; limit?: number }): Promise<LogItem[]>;
 }
 
+interface LanePointer {
+  lane: string;
+  leafId: string | null;
+  openOperationId: string | null;
+}
+
 interface IdGenerator { next(): string; }
 
 interface RecordQuery {
@@ -1573,6 +1577,8 @@ interface RecordQuery {
    * identity do not match.
    */
   runId?: string;
+  /** Exact operation intent kind. Valid only with type "operation_started". */
+  operationKind?: OperationStartedRecord["intent"]["kind"];
   /** Exclusive chronological lower bound: seq > afterSeq, regardless of order. */
   afterSeq?: number;
   /** Sequence order. Default: "newestFirst". */
@@ -1590,14 +1596,14 @@ interface RecordQuery {
 
 ### Contract
 
-One session per storage instance. Storage persists and answers queries; `Session` owns validation and view binding. Storage never executes operations, queues, or recovery. Record payloads are opaque except for indexed columns and the conditional open-operation write projection.
+One session per storage instance. Storage persists and answers queries; `Session` owns validation and view binding. Storage never executes operations, queues, or recovery. Record payloads are opaque except for indexed columns and the lane open-operation projection.
 
 ```ts
 interface SessionStorage {
   getMetadata(): Promise<SessionMetadata>;
 
   // Lanes
-  getLanes(): Promise<{ lane: string; leafId: string | null }[]>;
+  getLanes(): Promise<LanePointer[]>;
   createLane(lane: string, at: string | null): Promise<void>;
   moveLane(lane: string, to: string | null): Promise<void>;
 
@@ -1703,7 +1709,9 @@ branch_tips    (session_id, branch_id, tip_id)      -- PRIMARY KEY (session_id, 
 writer_leases (session_id, owner_id, fence, expires_at_ms)  -- writer claim
 
 -- indexes
-records:        (session_id, lane, seq), (session_id, lane, type, seq), (session_id, run_id, seq)
+records:        (session_id, lane, seq), (session_id, lane, type, seq)
+                (session_id, type, op_kind, seq), (session_id, lane, type, op_kind, seq)
+                (session_id, run_id, seq)
 branch_entries: (session_id, branch_id, entry_type, entry_seq)
                 (session_id, entry_id)              -- reverse lookup: entry → branches
 ```
@@ -1768,7 +1776,7 @@ Case 4 — a branch still ends at an entry that has children.
 
 Stale branches (no lane resolves through them) are kept.
 
-SQLite answers latest-start and geometric latest-run queries from `(session_id, lane, type, seq)` and matching-finish queries from `(session_id, run_id, seq)`. The open-operation projection remains a write-side guard, not a read API. Once discovery identifies a boundary, records above it use the lane/type indexes and the lane's own entries use the read plan from its leaf. No query touches another lane's traffic.
+SQLite returns open-operation ids with lane pointers from the `lanes` primary key and loads each projected start from `(session_id, run_id, seq)`. Its latest run-kind start uses `(session_id, lane, type, op_kind, seq)`. Once discovery identifies a boundary, records above it use the lane indexes and the lane's own entries use the read plan from its leaf. No query touches another lane's traffic.
 
 SQLite implementation follow-ups:
 
@@ -3241,11 +3249,9 @@ These packages merge R0 → R1 → R2 → R3. R1 and R2 add a reducer module ins
 
 - [x] **R0 — recovery-query contract.** Dependencies: none.
   - Primary files: `packages/agent/src/harness/session/types.ts`, `session.ts`, `memory.ts`, SQLite record storage/repository files, backend conformance, and focused recovery-query tests.
-  - Use bounded latest-first `findRecords` queries to derive the open operation and geometrically increasing latest-run lookups without a dedicated recovery-query API or dependent `RecordQuery` fields.
-  - Prove that idle/open operations are distinguishable, normal writes cannot start a second operation on a busy lane, and replay rejects the same invalid transition. Keep the lane open-operation projection as a write-side enforcement detail.
-  - Acceptance: memory and SQLite have identical generic record-query behavior and recovery discovery requires no backend-specific API.
-
-  **Potential lookup-efficiency gap after R0:** latest-run discovery examines consecutive non-run starts after the newest run and, in the worst case, every operation start. Geometric limits keep repeated work below twice the final prefix. SQLite serves each prefix from its lane/type/sequence index; further optimization is deferred until measurements show this uncommon history shape matters.
+  - Return `openOperationId` with each lane pointer, load the projected start through `findRecords`, and retain `RecordQuery.operationKind` for direct indexed latest-run lookup.
+  - Prove that idle/open operations are distinguishable, normal writes cannot start a second operation on a busy lane, and replay rejects the same invalid transition. Keep the lane open-operation projection consistent across backends.
+  - Acceptance: memory and SQLite have identical query behavior, projected starts are validated, and recovery discovery requires no backend-specific API or historical open-operation scan.
 
 - [x] **R1 — pure record-log validity.** Dependencies: R0.
   - Primary files: `packages/agent/src/harness/reducer.ts`, `packages/agent/test/harness/reducer.test.ts`.

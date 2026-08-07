@@ -292,8 +292,8 @@ describe("JSONL v4 persistence", () => {
 		const reopenedRepository = createRepository(root);
 		const reopened = await reopenedRepository.open(metadata);
 		expect(await reopened.getLanes()).toEqual([
-			{ lane: "main", leafId: null },
-			{ lane: "thread", leafId: entryId },
+			{ lane: "main", leafId: null, openOperationId: null },
+			{ lane: "thread", leafId: entryId, openOperationId: "run" },
 		]);
 		expect(await reopened.getName()).toBe("Example");
 		expect(await reopened.getLabel(entryId)).toBe("checkpoint");
@@ -361,8 +361,8 @@ describe("JSONL v4 persistence", () => {
 			threadId,
 		]);
 		expect(await reopened.getLanes()).toEqual([
-			{ lane: "main", leafId: mainId },
-			{ lane: "thread", leafId: threadId },
+			{ lane: "main", leafId: mainId, openOperationId: null },
+			{ lane: "thread", leafId: threadId, openOperationId: null },
 		]);
 		expect(await reopened.getName()).toBe("Source");
 		expect(await reopened.getLabel(threadId)).toBe("tip");

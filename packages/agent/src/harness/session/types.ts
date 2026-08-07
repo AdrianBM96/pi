@@ -256,6 +256,8 @@ export interface RecordQuery {
 	 * identity do not match.
 	 */
 	runId?: string;
+	/** Exact operation intent kind. Valid only with type "operation_started". */
+	operationKind?: OperationStartedRecord["intent"]["kind"];
 	/** Exclusive chronological lower bound: seq > afterSeq, regardless of order. */
 	afterSeq?: number;
 	/** Sequence order. Default: "newestFirst". */
@@ -281,6 +283,7 @@ export interface SessionStats {
 export interface LanePointer {
 	lane: string;
 	leafId: string | null;
+	openOperationId: string | null;
 }
 
 export type LogItem =
@@ -299,7 +302,7 @@ export interface SessionStorage<TMetadata extends SessionMetadata = SessionMetad
 	getMetadata(): Promise<TMetadata>;
 
 	// Lanes
-	getLanes(): Promise<{ lane: string; leafId: string | null }[]>;
+	getLanes(): Promise<LanePointer[]>;
 	createLane(lane: string, at: string | null): Promise<void>;
 	moveLane(lane: string, to: string | null): Promise<void>;
 

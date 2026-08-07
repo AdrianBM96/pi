@@ -71,7 +71,11 @@ export class SessionState {
 	}
 
 	getLanes(): LanePointer[] {
-		return [...this.lanes].map(([lane, leafId]) => ({ lane, leafId }));
+		return [...this.lanes].map(([lane, leafId]) => ({
+			lane,
+			leafId,
+			openOperationId: this.getOpenOperationId(lane) ?? null,
+		}));
 	}
 
 	requireLane(lane: string): string | null {
@@ -276,7 +280,7 @@ export class SessionState {
 				targetId = position === "at" ? entry.id : entry.parentId;
 			}
 			copiedEntries = targetId === null ? [] : this.findEntriesOnBranch({ start: targetId, order: "oldestFirst" });
-			forkLanes = [{ lane: "main", leafId: targetId }];
+			forkLanes = [{ lane: "main", leafId: targetId, openOperationId: null }];
 		}
 
 		const mutations: SessionMutation[] = [];
@@ -337,6 +341,8 @@ export class SessionState {
 				(record.type === "operation_started"
 					? record.id === query.runId
 					: "runId" in record && record.runId === query.runId)) &&
+			(query.operationKind === undefined ||
+				(record.type === "operation_started" && record.intent.kind === query.operationKind)) &&
 			(query.afterSeq === undefined || record.seq > query.afterSeq)
 		);
 	}

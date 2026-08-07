@@ -49,12 +49,12 @@ describe("SQLite migrations", () => {
 				expect.arrayContaining([
 					"idx_records_session_lane_seq",
 					"idx_records_session_lane_type_seq",
+					"idx_records_session_type_op_kind_seq",
+					"idx_records_session_lane_type_op_kind_seq",
 					"idx_records_session_run_id_seq",
 				]),
 			);
 			expect(recordIndexNames).not.toContain("idx_records_session_seq");
-			expect(recordIndexNames).not.toContain("idx_records_session_type_op_kind_seq");
-			expect(recordIndexNames).not.toContain("idx_records_session_lane_type_op_kind_seq");
 			const laneMoveIndexes = db.prepare("PRAGMA index_list(lane_moves)").all<{ name: string }>();
 			expect(laneMoveIndexes.map((index) => index.name)).not.toContain("idx_lane_moves_session_lane_seq");
 		} finally {
