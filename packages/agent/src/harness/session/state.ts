@@ -94,6 +94,11 @@ export class SessionState {
 		if (this.usedIds.has(id)) throw new SessionError("already_exists", `Session id already exists: ${id}`);
 	}
 
+	/**
+	 * Applies one mutation to the in-memory session state and its derived projections.
+	 * Validates sequence, identity, and reference invariants but performs no persistence or cloning.
+	 * The optional handler controls how invalid replayed data is reported by a storage backend.
+	 */
 	applyMutation(mutation: SessionMutation, invalid: InvalidMutation = invalidMutation): void {
 		const seq =
 			mutation.kind === "entry"

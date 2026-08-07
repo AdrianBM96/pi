@@ -22,6 +22,10 @@ export function fileResult<T>(result: Result<T, FileError>, message: string): T 
 	return result.value;
 }
 
-export function invalidFile(path: string, line: number, cause: Error): SessionError {
-	return new SessionError("invalid_entry", `Invalid JSONL v4 session ${path}: line ${line} ${cause.message}`, cause);
+export function invalidFile(path: string, line: number, cause: Error, sourceFormat: 3 | 4 = 4): SessionError {
+	return new SessionError(
+		"invalid_entry",
+		`Invalid JSONL v${sourceFormat} session ${path}: line ${line} ${cause.message}`,
+		cause,
+	);
 }

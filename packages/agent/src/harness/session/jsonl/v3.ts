@@ -1,0 +1,132 @@
+import type { AgentMessage } from "../../../types.ts";
+import { err, ok, type Result } from "../../types.ts";
+import type { SessionMutation } from "../state.ts";
+import type { Entry } from "../types.ts";
+import { JsonlDecodeError } from "./errors.ts";
+import type { JsonlSessionMetadata } from "./types.ts";
+
+export interface JsonlV3Header {
+	type: "session";
+	version: 3;
+	id: string;
+	timestamp: string;
+	cwd: string;
+	parentSession?: string;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseObject(line: string): Record<string, unknown> {
+	let value: unknown;
+	try {
+		value = JSON.parse(line);
+	} catch (error) {
+		throw new JsonlDecodeError("syntax", "is not valid JSON", error instanceof Error ? error : undefined);
+	}
+	if (!isObject(value)) throw new JsonlDecodeError("schema", "is not a JSON object");
+	return value;
+}
+
+function requireString(value: unknown, field: string): string {
+	if (typeof value !== "string") throw new JsonlDecodeError("schema", `has invalid ${field}`);
+	return value;
+}
+
+function requireNullableString(value: unknown, field: string): string | null {
+	if (value !== null && typeof value !== "string") {
+		throw new JsonlDecodeError("schema", `has invalid ${field}`);
+	}
+	return value;
+}
+
+function parseTimestamp(value: unknown): { source: string; milliseconds: number } {
+	const source = requireString(value, "timestamp");
+	const milliseconds = Date.parse(source);
+	if (!Number.isFinite(milliseconds)) throw new JsonlDecodeError("schema", "has invalid timestamp");
+	return { source, milliseconds };
+}
+
+function decodeResult<T>(decode: () => T): Result<T, JsonlDecodeError> {
+	try {
+		return ok<T, JsonlDecodeError>(decode());
+	} catch (error) {
+		if (error instanceof JsonlDecodeError) return err<T, JsonlDecodeError>(error);
+		throw error;
+	}
+}
+
+export function isJsonlV3Header(line: string): boolean {
+	try {
+		const value: unknown = JSON.parse(line);
+		return isObject(value) && value.type === "session" && value.version === 3;
+	} catch {
+		return false;
+	}
+}
+
+function decodeJsonlV3Header(line: string): JsonlV3Header {
+	const value = parseObject(line);
+	if (value.type !== "session" || value.version !== 3) {
+		throw new JsonlDecodeError("schema", "is not a version 3 session header");
+	}
+	const parentSession = value.parentSession;
+	if (parentSession !== undefined && typeof parentSession !== "string") {
+		throw new JsonlDecodeError("schema", "has invalid parentSession");
+	}
+	return {
+		type: "session",
+		version: 3,
+		id: requireString(value.id, "id"),
+		timestamp: parseTimestamp(value.timestamp).source,
+		cwd: requireString(value.cwd, "cwd"),
+		parentSession,
+	};
+}
+
+export function parseJsonlV3Header(line: string): Result<JsonlV3Header, JsonlDecodeError> {
+	return decodeResult(() => decodeJsonlV3Header(line));
+}
+
+export function parseJsonlV3Entry(line: string, seq: number): Result<Entry, JsonlDecodeError> {
+	return decodeResult(() => {
+		const value = parseObject(line);
+		// TODO(J4): Decode and normalize every supported coding-agent v3 entry type.
+		if (value.type !== "message") {
+			throw new JsonlDecodeError("schema", `has unsupported entry type ${String(value.type)}`);
+		}
+		if (!isObject(value.message)) throw new JsonlDecodeError("schema", "has invalid message");
+		return {
+			type: "message",
+			id: requireString(value.id, "id"),
+			parentId: requireNullableString(value.parentId, "parentId"),
+			seq,
+			timestamp: parseTimestamp(value.timestamp).milliseconds,
+			// TODO(J6): Validate legacy message payloads with the shared AgentMessage schema.
+			message: value.message as unknown as AgentMessage,
+		};
+	});
+}
+
+export function metadataFromV3Header(header: JsonlV3Header, path: string, modifiedAt: number): JsonlSessionMetadata {
+	return {
+		id: header.id,
+		createdAt: Date.parse(header.timestamp),
+		cwd: header.cwd,
+		path,
+		modifiedAt,
+		sourceFormat: 3,
+		// TODO(J4): Resolve available parent paths to parentSessionId and preserve only unresolved paths here.
+		...(header.parentSession === undefined ? {} : { legacyParentSessionPath: header.parentSession }),
+	};
+}
+
+export function mutationsFromV3Entries(entries: readonly Entry[]): SessionMutation[] {
+	const mutations: SessionMutation[] = entries.map((entry) => ({ kind: "entry", entry }));
+	const leaf = entries.at(-1);
+	if (leaf !== undefined) {
+		mutations.push({ kind: "lane", seq: leaf.seq + 1, lane: "main", leafId: leaf.id });
+	}
+	return mutations;
+}

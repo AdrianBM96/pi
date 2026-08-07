@@ -19,6 +19,13 @@ import {
 import { encodeHeader, encodeMutation, metadataFromHeader, parseHeader, parseMutation } from "./codec.ts";
 import { fileResult, invalidFile, JsonlDecodeError } from "./errors.ts";
 import type { JsonlSessionMetadata, JsonlSessionRepoFileSystem, JsonlV4Header } from "./types.ts";
+import {
+	isJsonlV3Header,
+	metadataFromV3Header,
+	mutationsFromV3Entries,
+	parseJsonlV3Entry,
+	parseJsonlV3Header,
+} from "./v3.ts";
 
 /**
  * Build a complete sibling temporary file, then atomically rename it over the destination.
@@ -73,9 +80,12 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		if (physicalLines.length === 0 || !physicalLines[0]) {
 			throw invalidFile(path, 1, new JsonlDecodeError("schema", "is missing a header"));
 		}
+		const fileInfo = fileResult(await fs.fileInfo(path), `Failed to read session metadata ${path}`);
+		if (isJsonlV3Header(physicalLines[0])) {
+			return JsonlSessionStorage.loadV3(fs, path, physicalLines, fileInfo.mtimeMs);
+		}
 		const headerResult = parseHeader(physicalLines[0]);
 		if (!headerResult.ok) throw invalidFile(path, 1, headerResult.error);
-		const fileInfo = fileResult(await fs.fileInfo(path), `Failed to read session metadata ${path}`);
 		const storage = new JsonlSessionStorage(fs, metadataFromHeader(headerResult.value, path, fileInfo.mtimeMs));
 		for (let index = 1; index < physicalLines.length; index++) {
 			const line = physicalLines[index]!;
@@ -93,7 +103,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 				throw invalidFile(path, index + 1, mutationResult.error);
 			}
 			try {
-				storage.applyMutation(mutationResult.value);
+				storage.state.applyMutation(mutationResult.value);
 			} catch (error) {
 				if (error instanceof SessionError && error.code === "invalid_entry") {
 					throw invalidFile(path, index + 1, error);
@@ -107,13 +117,32 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		return storage;
 	}
 
+	private static loadV3(
+		fs: JsonlSessionRepoFileSystem,
+		path: string,
+		physicalLines: readonly string[],
+		modifiedAt: number,
+	): JsonlSessionStorage {
+		const headerResult = parseJsonlV3Header(physicalLines[0]!);
+		if (!headerResult.ok) throw invalidFile(path, 1, headerResult.error, 3);
+		const entries: Entry[] = [];
+		for (let index = 1; index < physicalLines.length; index++) {
+			const entryResult = parseJsonlV3Entry(physicalLines[index]!, index);
+			if (!entryResult.ok) throw invalidFile(path, index + 1, entryResult.error, 3);
+			entries.push(entryResult.value);
+		}
+		const storage = new JsonlSessionStorage(fs, metadataFromV3Header(headerResult.value, path, modifiedAt));
+		for (const mutation of mutationsFromV3Entries(entries)) storage.state.applyMutation(mutation);
+		return storage;
+	}
+
 	async fork(path: string, header: JsonlV4Header, options: ForkOptions): Promise<JsonlSessionStorage> {
 		const mutations = this.state.createForkMutations(options);
 		await publishFileAtomically(this.fs, path, async (tempPath) => {
 			const targetStorage = await JsonlSessionStorage.create(this.fs, tempPath, header);
 			for (const mutation of mutations) {
 				await targetStorage.appendMutation(mutation);
-				targetStorage.applyMutation(mutation);
+				targetStorage.state.applyMutation(mutation);
 			}
 		});
 		return JsonlSessionStorage.load(this.fs, path);
@@ -137,7 +166,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 			this.state.validateTarget(at);
 			const mutation: SessionMutation = { kind: "lane", seq: this.state.nextSequence, lane, leafId: at };
 			await this.appendMutation(mutation);
-			this.applyMutation(mutation);
+			this.state.applyMutation(mutation);
 		});
 	}
 
@@ -147,7 +176,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 			this.state.validateTarget(to);
 			const mutation: SessionMutation = { kind: "lane", seq: this.state.nextSequence, lane, leafId: to };
 			await this.appendMutation(mutation);
-			this.applyMutation(mutation);
+			this.state.applyMutation(mutation);
 		});
 	}
 
@@ -163,7 +192,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 			} as unknown as TEntry;
 			const mutation: SessionMutation = { kind: "entry", lane, entry };
 			await this.appendMutation(mutation);
-			this.applyMutation(mutation);
+			this.state.applyMutation(mutation);
 			return structuredClone(entry);
 		});
 	}
@@ -186,7 +215,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 			} as unknown as TRecord;
 			const mutation: SessionMutation = { kind: "record", record };
 			await this.appendMutation(mutation);
-			this.applyMutation(mutation);
+			this.state.applyMutation(mutation);
 			return structuredClone(record);
 		});
 	}
@@ -228,7 +257,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		return this.enqueue(async () => {
 			const mutation: SessionMutation = { kind: "fact", seq: this.state.nextSequence, fact: "name", name };
 			await this.appendMutation(mutation);
-			this.applyMutation(mutation);
+			this.state.applyMutation(mutation);
 		});
 	}
 
@@ -247,7 +276,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 				label,
 			};
 			await this.appendMutation(mutation);
-			this.applyMutation(mutation);
+			this.state.applyMutation(mutation);
 		});
 	}
 
@@ -265,13 +294,12 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 	}
 
 	private async appendMutation(mutation: SessionMutation): Promise<void> {
+		if (this.metadata.sourceFormat === 3) {
+			throw new SessionError("storage", "Writing version 3 JSONL sessions requires first-write conversion");
+		}
 		fileResult(
 			await this.fs.appendFile(this.metadata.path, encodeMutation(mutation)),
 			`Failed to append session ${this.metadata.path}`,
 		);
-	}
-
-	private applyMutation(mutation: SessionMutation): void {
-		this.state.applyMutation(mutation);
 	}
 }
