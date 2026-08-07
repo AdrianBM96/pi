@@ -220,13 +220,23 @@ export interface EntryCursor {
 	afterSeq: number;
 }
 
-export interface EntryQuery {
-	type?: Entry["type"];
-	customType?: string; // for type "custom"
+interface EntryQueryBase {
 	order?: EntryOrder; // default newestFirst
 	limit?: number;
 	cursor?: EntryCursor;
 }
+
+export type EntryQuery = EntryQueryBase &
+	(
+		| {
+				type?: "custom";
+				customType?: string;
+		  }
+		| {
+				type: Exclude<Entry["type"], "custom">;
+				customType?: never;
+		  }
+	);
 
 /** Bounds of a branch scan. Default: the whole path, leaf to root. */
 export interface BranchBounds {
