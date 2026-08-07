@@ -155,7 +155,9 @@ export function parseJsonlV3Entry(line: string, seq: number): Result<Entry, Json
 					} satisfies CustomMessage,
 				} satisfies MessageEntry;
 			default:
-				// TODO(J4): Decode and normalize the remaining supported coding-agent v3 entry types.
+				// TODO(J4): Normalize v3 compaction and branch_summary entries, preserving details, usage,
+				// and required fromHook provenance, and materialize firstKeptEntryId as retainedTail.
+				// TODO(J4): Decode and normalize the remaining label and session_info entry types.
 				throw new JsonlDecodeError("schema", `has unsupported entry type ${String(value.type)}`);
 		}
 	});
