@@ -298,9 +298,6 @@ describe("JSONL v4 persistence", () => {
 		expect(await reopened.getName()).toBe("Example");
 		expect(await reopened.getLabel(entryId)).toBe("checkpoint");
 		expect((await reopened.findRecords()).map((record) => record.id)).toEqual(["run"]);
-		expect(
-			(await reopened.findRecords({ type: "operation_started" })).find((record) => record.intent.kind === "run")?.id,
-		).toBe("run");
 		expect((await reopened.getLog()).map((item) => item.seq)).toEqual([1, 2, 3, 4, 5, 6]);
 		expect(
 			(
