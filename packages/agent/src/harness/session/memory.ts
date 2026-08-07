@@ -11,7 +11,6 @@ import {
 	type LogItem,
 	type LogOptions,
 	type NewRecord,
-	type OperationStartedRecord,
 	type ProvisionedEntry,
 	type RecordQuery,
 	type SessionCreateOptions,
@@ -72,7 +71,7 @@ export class InMemorySessionStorage implements SessionStorage {
 	async appendRecord<TRecord extends LaneRecord>(newRecord: NewRecord<TRecord>): Promise<TRecord> {
 		this.state.requireLane(newRecord.lane);
 		this.state.validateUnusedId(newRecord.id);
-		const currentOpenOperationId = this.state.findOpenOperations(newRecord.lane, { limit: 1 })[0]?.id;
+		const currentOpenOperationId = this.state.getOpenOperationId(newRecord.lane);
 		if (newRecord.type === "operation_started" && currentOpenOperationId !== undefined) {
 			throw new SessionError(
 				"storage",
@@ -107,10 +106,6 @@ export class InMemorySessionStorage implements SessionStorage {
 	async findRecords(query?: RecordQuery): Promise<LaneRecord[]>;
 	async findRecords(query: RecordQuery = {}): Promise<LaneRecord[]> {
 		return structuredClone(this.state.findRecords(query));
-	}
-
-	async findOpenOperations(lane: string, options?: { limit?: number }): Promise<OperationStartedRecord[]> {
-		return structuredClone(this.state.findOpenOperations(lane, options));
 	}
 
 	async getLog(options: LogOptions = {}): Promise<LogItem[]> {

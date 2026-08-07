@@ -9,7 +9,6 @@ import {
 	type LogItem,
 	type LogOptions,
 	type NewRecord,
-	type OperationStartedRecord,
 	type ProvisionedEntry,
 	type RecordQuery,
 	SessionError,
@@ -172,7 +171,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		return this.enqueue(async () => {
 			this.state.requireLane(newRecord.lane);
 			this.state.validateUnusedId(newRecord.id);
-			const currentOpenOperationId = this.state.findOpenOperations(newRecord.lane, { limit: 1 })[0]?.id;
+			const currentOpenOperationId = this.state.getOpenOperationId(newRecord.lane);
 			if (newRecord.type === "operation_started" && currentOpenOperationId !== undefined) {
 				throw new SessionError(
 					"storage",
@@ -210,10 +209,6 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 	async findRecords(query?: RecordQuery): Promise<LaneRecord[]>;
 	async findRecords(query: RecordQuery = {}): Promise<LaneRecord[]> {
 		return structuredClone(this.state.findRecords(query));
-	}
-
-	async findOpenOperations(lane: string, options?: { limit?: number }): Promise<OperationStartedRecord[]> {
-		return structuredClone(this.state.findOpenOperations(lane, options));
 	}
 
 	async getLog(options: LogOptions = {}): Promise<LogItem[]> {

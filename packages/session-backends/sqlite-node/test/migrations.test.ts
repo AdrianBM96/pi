@@ -44,14 +44,17 @@ describe("SQLite migrations", () => {
 			const branchEntryIndexes = db.prepare("PRAGMA index_list(branch_entries)").all<{ name: string }>();
 			expect(branchEntryIndexes.map((index) => index.name)).toContain("idx_branch_entries_session_entry");
 			const recordIndexes = db.prepare("PRAGMA index_list(records)").all<{ name: string }>();
-			expect(recordIndexes.map((index) => index.name)).toEqual(
+			const recordIndexNames = recordIndexes.map((index) => index.name);
+			expect(recordIndexNames).toEqual(
 				expect.arrayContaining([
 					"idx_records_session_lane_seq",
-					"idx_records_session_type_seq",
-					"idx_records_session_type_op_kind_seq",
+					"idx_records_session_lane_type_seq",
+					"idx_records_session_run_id_seq",
 				]),
 			);
-			expect(recordIndexes.map((index) => index.name)).not.toContain("idx_records_session_seq");
+			expect(recordIndexNames).not.toContain("idx_records_session_seq");
+			expect(recordIndexNames).not.toContain("idx_records_session_type_op_kind_seq");
+			expect(recordIndexNames).not.toContain("idx_records_session_lane_type_op_kind_seq");
 			const laneMoveIndexes = db.prepare("PRAGMA index_list(lane_moves)").all<{ name: string }>();
 			expect(laneMoveIndexes.map((index) => index.name)).not.toContain("idx_lane_moves_session_lane_seq");
 		} finally {

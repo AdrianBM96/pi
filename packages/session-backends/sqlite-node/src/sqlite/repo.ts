@@ -8,7 +8,6 @@ import {
 	type LogItem,
 	type LogOptions,
 	type NewRecord,
-	type OperationStartedRecord,
 	type ProvisionedEntry,
 	type RecordQuery,
 	Session,
@@ -46,13 +45,7 @@ import {
 	startLaneOperation,
 	moveLane as updateLane,
 } from "./storage/lanes.ts";
-import {
-	appendRecordRow,
-	deleteRecordRows,
-	idExistsInRecords,
-	readOpenOperationRows,
-	readRecordRows,
-} from "./storage/records.ts";
+import { appendRecordRow, deleteRecordRows, idExistsInRecords, readRecordRows } from "./storage/records.ts";
 import {
 	advanceSequence,
 	createSequence,
@@ -563,18 +556,6 @@ class SqliteSessionStorage implements SessionStorage<SqliteSessionMetadata> {
 	async findRecords(query: RecordQuery = {}): Promise<LaneRecord[]> {
 		const rows = readRecordRows(this.db, this.metadata.id, query);
 		return rows.map(decodeRecord);
-	}
-
-	async findOpenOperations(lane: string, options?: { limit?: number }): Promise<OperationStartedRecord[]> {
-		const rows = readOpenOperationRows(this.db, this.metadata.id, lane, options);
-
-		return rows.map((row) => {
-			const record = decodeRecord(row);
-			if (record.type !== "operation_started") {
-				throw new SessionError("storage", "Expected operation_started record");
-			}
-			return record;
-		});
 	}
 
 	async getLog(options: LogOptions = {}): Promise<LogItem[]> {

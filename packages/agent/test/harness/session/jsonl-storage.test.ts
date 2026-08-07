@@ -200,7 +200,7 @@ describe("JSONL v4 per-session storage", () => {
 		expect(await restored.findEntries({ order: "oldestFirst" })).toEqual(committed);
 	});
 
-	it("round trips every record type, recovery projection, and ledger statistics", async () => {
+	it("round trips every record type and ledger statistics", async () => {
 		const root = createTempDir();
 		const session = await createRepository(root).create({ id: "records", cwd: root });
 		await session.appendCustomEntry("anchor");
@@ -382,15 +382,8 @@ describe("JSONL v4 per-session storage", () => {
 
 		const restored = await reopen(root, session);
 		expect(await restored.findRecords({ order: "oldestFirst" })).toEqual(records);
-		expect(
-			(
-				await restored.findRecords({
-					type: "operation_started",
-					operationKind: "run",
-					limit: 1,
-				})
-			).map((record) => record.id),
-		).toEqual(["run"]);
+		const starts = await restored.findRecords({ type: "operation_started" });
+		expect(starts.find((record) => record.intent.kind === "run")?.id).toBe("run");
 		expect(
 			(await restored.findRecords({ runId: "compaction", order: "oldestFirst" })).map((record) => record.id),
 		).toEqual(["compaction", "compaction-attempt", "compaction-finished"]);
@@ -399,9 +392,6 @@ describe("JSONL v4 per-session storage", () => {
 				(record) => record.id,
 			),
 		).toEqual(["adjustment", "hook-usage"]);
-		expect((await restored.findOpenOperations("main", { limit: 2 })).map((record) => record.id)).toEqual([
-			"navigation",
-		]);
 		expect(await restored.getStats()).toEqual({
 			messageCount: 0,
 			cachedTokens: 45,
@@ -410,7 +400,7 @@ describe("JSONL v4 per-session storage", () => {
 			costTotal: 15,
 		});
 
-		const [started] = await restored.findRecords({ type: "operation_started", operationKind: "run" });
+		const started = starts.find((record) => record.intent.kind === "run");
 		if (started?.intent.kind !== "run") throw new Error("Expected restored run record");
 		started.intent.originalPrompt.push(userMessage("mutated"));
 		expect(await restored.findRecords({ order: "oldestFirst" })).toEqual(records);

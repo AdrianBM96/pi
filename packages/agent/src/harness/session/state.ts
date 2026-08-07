@@ -53,7 +53,7 @@ export class SessionState {
 	private readonly entries: Entry[] = [];
 	private readonly entriesById = new Map<string, Entry>();
 	private readonly records: LaneRecord[] = [];
-	private readonly openOperationsByLane = new Map<string, Map<string, OperationStartedRecord>>();
+	private readonly openOperationByLane = new Map<string, OperationStartedRecord>();
 	private readonly lanes = new Map<string, string | null>([["main", null]]);
 	private readonly log: LogItem[] = [];
 	private readonly stats: SessionStats = {
@@ -126,18 +126,22 @@ export class SessionState {
 			case "record": {
 				if (!this.lanes.has(mutation.record.lane)) invalid(`references missing lane ${mutation.record.lane}`);
 				if (this.usedIds.has(mutation.record.id)) invalid(`contains duplicate id ${mutation.record.id}`);
+				if (mutation.record.type === "operation_started") {
+					const currentOpenOperationId = this.getOpenOperationId(mutation.record.lane);
+					if (currentOpenOperationId !== undefined) {
+						invalid(`starts operation ${mutation.record.id} while ${currentOpenOperationId} remains open`);
+					}
+				}
 				this.sequence = seq;
 				this.usedIds.add(mutation.record.id);
 				this.records.push(mutation.record);
 				if (mutation.record.type === "operation_started") {
-					let openOperations = this.openOperationsByLane.get(mutation.record.lane);
-					if (!openOperations) {
-						openOperations = new Map();
-						this.openOperationsByLane.set(mutation.record.lane, openOperations);
-					}
-					openOperations.set(mutation.record.id, mutation.record);
-				} else if (mutation.record.type === "operation_finished") {
-					this.openOperationsByLane.get(mutation.record.lane)?.delete(mutation.record.runId);
+					this.openOperationByLane.set(mutation.record.lane, mutation.record);
+				} else if (
+					mutation.record.type === "operation_finished" &&
+					this.openOperationByLane.get(mutation.record.lane)?.id === mutation.record.runId
+				) {
+					this.openOperationByLane.delete(mutation.record.lane);
 				}
 				this.log.push({ kind: "record", seq, record: mutation.record });
 				if (mutation.record.type === "usage") {
@@ -226,11 +230,8 @@ export class SessionState {
 		return results;
 	}
 
-	findOpenOperations(lane: string, options?: { limit?: number }): OperationStartedRecord[] {
-		assertValidLimit(options?.limit);
-		const openOperationsById = this.openOperationsByLane.get(lane);
-		const openOperations = openOperationsById ? [...openOperationsById.values()].reverse() : [];
-		return options?.limit === undefined ? openOperations : openOperations.slice(0, options.limit);
+	getOpenOperationId(lane: string): string | undefined {
+		return this.openOperationByLane.get(lane)?.id;
 	}
 
 	getLog(options: LogOptions = {}): LogItem[] {
@@ -336,8 +337,6 @@ export class SessionState {
 				(record.type === "operation_started"
 					? record.id === query.runId
 					: "runId" in record && record.runId === query.runId)) &&
-			(query.operationKind === undefined ||
-				(record.type === "operation_started" && record.intent.kind === query.operationKind)) &&
 			(query.afterSeq === undefined || record.seq > query.afterSeq)
 		);
 	}

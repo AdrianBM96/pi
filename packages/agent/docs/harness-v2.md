@@ -645,15 +645,17 @@ Deferred assistant messages carry a handle, not content; they project to nothing
 
 Opening a session restores every lane independently. Restore reads; it never appends and never starts effects.
 
-Recovery starts with indexed discovery, not a full log scan:
+Recovery derives discovery state from bounded latest-first queries:
 
-1. `findOpenOperations(lane, { limit: 2 })` returns unfinished `operation_started` records newest first. Zero means idle, one means suspended, and two means corruption. Backends must answer this from replayed/indexed operation state; callers cannot infer it from only the newest start.
-2. For an idle lane, one indexed query finds the newest run-kind `operation_started`, then filtered `queue_enqueued` / `queue_cancelled` queries above it reconstruct pending `nextRun` items. With no prior run, the same type-filtered queries read only pre-run queue state; unrelated usage adjustments are never scanned.
+1. `findRecords({ lane, type: "operation_started", limit: 1 })` returns the latest start. A second query for its `runId` and type `operation_finished` decides whether that start remains open; a finish closes it only when its `seq` is newer. Because storage rejects a second start while one is open and replay validates the same invariant, no older start can remain open. No start, or a latest start with a later finish, means idle; otherwise the lane is suspended.
+2. For an idle lane, query `operation_started` records newest first with limits 1, 2, 4, and so on until a returned record has intent kind `run` or fewer than `limit` records are returned. The newest run found bounds filtered `queue_enqueued` / `queue_cancelled` queries that reconstruct pending `nextRun` items. With no prior run, the same type-filtered queries read only pre-run queue state.
 3. For a suspended lane, the open operation selects two bounded payload reads:
    - **The lane's records** since that `operation_started`. Everything after the finish of the previous operation is irrelevant history.
    - **The lane's own entries**: the path from its leaf back to the operation's anchor (`sourceLeafId`). These are exactly the entries this operation appended.
 
-Reduction may additionally perform point lookups for provisioned entry ids and bounded branch lookups for effective model, thinking, and active-tool configuration at the operation anchor. These are indexed lookups, not extra history scans. Every scan is bounded by the open operation or the still-relevant idle queue, not by total session history or another lane's activity.
+**Potential lookup-efficiency gap:** finding the latest run is linear in the number of consecutive non-run operation starts after it. Geometric limits return fewer than twice that many starts, and normal histories have only a few intervening compaction or navigation operations. The worst case remains a lane with many non-run operations and no recent run; backends may optimize that case internally if measurements justify it.
+
+Reduction may additionally perform point lookups for provisioned entry ids and bounded branch lookups for effective model, thinking, and active-tool configuration at the operation anchor. After discovery identifies the recovery boundary, these reads are bounded by the open operation or the still-relevant idle queue, not by another lane's activity.
 
 An idle lane's remaining state is pending next-run queue items. Next-run messages can be enqueued at any time; only the acceptance of a run consumes them — compaction and navigation pass over the queue. Pending items are the `queue_enqueued` records after the lane's most recent run-kind `operation_started` whose provisioned entries do not exist and that no `queue_cancelled` retracts. Items a run captured are listed in its intent's `initialMessages`, so a captured-but-unappended item is completed by that run's recovery and is never offered to the next run.
 
@@ -1457,13 +1459,24 @@ Read-only opens keep the physical v3 file unchanged; the first v4 write persists
 The tree-facing contract. Each lane exposes one view (`lane.session`); `Session` itself implements it for `main`. Reads pass through always. A write through a lane view enters that lane's mutation line: while a run is open — including suspension and cancellation — it becomes a durable deferred write; during compaction or navigation it waits for the operation to end; on an idle lane it appends directly. Writes on a standalone `Session` (no harness attached) apply immediately.
 
 ```ts
-interface EntryQuery {
-  type?: Entry["type"];
-  customType?: string;                     // for type "custom"
+interface EntryQueryBase {
   order?: "newestFirst" | "oldestFirst";   // default newestFirst
   limit?: number;
   cursor?: EntryCursor;
 }
+
+type EntryQuery = EntryQueryBase & (
+  | {
+      /** Omit to query every entry type unless customType is present. */
+      type?: "custom";
+      /** When present, implicitly restricts results to custom entries. */
+      customType?: string;
+    }
+  | {
+      type: Exclude<Entry["type"], "custom">;
+      customType?: never;
+    }
+);
 
 /** Bounds of a branch scan. Default: the whole path, leaf to root. */
 interface BranchBounds {
@@ -1502,7 +1515,7 @@ interface SessionTree {
 Query semantics: a branch scan takes the path from `start` to root, walks it in `order` direction, stops after a `stopAt` match (inclusive), filters, then applies `limit` and `cursor`.
 
 - `newestFirst` with `stopAtType: "compaction"` ends at the newest compaction: the context window.
-- `type` and `customType` filter results; a `stopAt` entry is returned only if it passes the filter.
+- `type` and `customType` filter results; `customType` alone selects custom entries, and cannot be combined with a non-custom `type`. A `stopAt` entry is returned only if it passes the filter.
 - Extension patterns: effective state = `findEntryOnBranch({ type: "custom", customType })`; collections = `findEntriesOnBranch(...)`; global inventory = `findEntries(...)`.
 - Context build is a branch scan with `stopAtType: "compaction"`, projected through `entryProjectors` and `toProviderMessages`. Its projection is the compaction summary, the materialized `retainedTail`, then the entries after the compaction; nothing before the compaction is read.
 - `SessionTree` has no navigation; moving a lane is `navigateTree()` on the lane.
@@ -1542,9 +1555,6 @@ class Session implements SessionTree {          // bound to "main"
     query: RecordQuery & { type: K },
   ): Promise<Extract<LaneRecord, { type: K }>[]>;
   findRecords(query?: RecordQuery): Promise<LaneRecord[]>;
-  /** Unfinished operation starts, newest first. limit: 2 distinguishes the
-      valid zero/one states from multiple-open-operation corruption. */
-  findOpenOperations(lane: string, options?: { limit?: number }): Promise<OperationStartedRecord[]>;
   /** Full chronological view: entries, records, facts, lane moves,
       merged by seq. Debugging and tests. */
   getLog(options?: { afterSeq?: number; limit?: number }): Promise<LogItem[]>;
@@ -1563,8 +1573,6 @@ interface RecordQuery {
    * identity do not match.
    */
   runId?: string;
-  /** Exact operation intent kind. Valid only with type "operation_started". */
-  operationKind?: OperationStartedRecord["intent"]["kind"];
   /** Exclusive chronological lower bound: seq > afterSeq, regardless of order. */
   afterSeq?: number;
   /** Sequence order. Default: "newestFirst". */
@@ -1582,7 +1590,7 @@ interface RecordQuery {
 
 ### Contract
 
-One session per storage instance. Storage persists and answers queries; `Session` owns validation and view binding. Storage never executes operations, queues, or recovery. Record payloads are opaque except for indexed columns and the required open-operation recovery projection.
+One session per storage instance. Storage persists and answers queries; `Session` owns validation and view binding. Storage never executes operations, queues, or recovery. Record payloads are opaque except for indexed columns and the conditional open-operation write projection.
 
 ```ts
 interface SessionStorage {
@@ -1609,7 +1617,6 @@ interface SessionStorage {
     query: RecordQuery & { type: K },
   ): Promise<Extract<LaneRecord, { type: K }>[]>;
   findRecords(query?: RecordQuery): Promise<LaneRecord[]>;
-  findOpenOperations(lane: string, options?: { limit?: number }): Promise<OperationStartedRecord[]>;
   getLog(options?): Promise<LogItem[]>;
 
   // Global facts
@@ -1627,7 +1634,6 @@ Contract rules, all backends:
 - `Session` and the harness provision ids with `session.idGenerator`; storage enforces per-session uniqueness at append.
 - Every durable payload must be JSON-serializable. `Session` validates before dispatch so Memory, JSONL, and SQLite accept the same values; Memory does not retain values JSONL would reject.
 - Reads return immutable data.
-- `findOpenOperations` is a required recovery projection: Memory maintains it with its record state, JSONL derives it while replaying the file, and SQLite answers it from the lane's current open-operation projection. It returns unfinished starts newest first and must expose a second result when a replayed/imported backend observes multiple open operations so recovery can reject corruption. Backends with conditional current-state projections may reject a second `operation_started` append instead of creating that corruption through their normal write API.
 - No general conditional writes exist. Single-writer plus the lane mutation line make compare-and-set unnecessary for normal appends and pointer/fact updates. The lane open-operation projection is the narrow exception: starting an operation conditionally sets the lane's open operation from `null` to the run id, and a failed update means the lane is already busy.
 - One writer per session, enforced by the serving layer; SQLite additionally rejects a second writer itself. Per session, not per backend: one SQLite database hosts many sessions, each with its own single writer.
 - Any write failure faults the harness (section 4). The store is left a valid prefix.
@@ -1697,7 +1703,7 @@ branch_tips    (session_id, branch_id, tip_id)      -- PRIMARY KEY (session_id, 
 writer_leases (session_id, owner_id, fence, expires_at_ms)  -- writer claim
 
 -- indexes
-records:        (session_id, lane, type, seq), (session_id, lane, type, op_kind, seq)
+records:        (session_id, lane, seq), (session_id, lane, type, seq), (session_id, run_id, seq)
 branch_entries: (session_id, branch_id, entry_type, entry_seq)
                 (session_id, entry_id)              -- reverse lookup: entry → branches
 ```
@@ -1762,7 +1768,7 @@ Case 4 — a branch still ends at an entry that has children.
 
 Stale branches (no lane resolves through them) are kept.
 
-Every restore query is an index seek plus a bounded scan: a lane's open operation via `(lane, type, seq)`, its last run-kind start via `(lane, type, op_kind, seq)`, its records above the operation via the same index, its own entries via the read plan from its leaf. No query touches another lane's traffic.
+SQLite answers latest-start and geometric latest-run queries from `(session_id, lane, type, seq)` and matching-finish queries from `(session_id, run_id, seq)`. The open-operation projection remains a write-side guard, not a read API. Once discovery identifies a boundary, records above it use the lane/type indexes and the lane's own entries use the read plan from its leaf. No query touches another lane's traffic.
 
 SQLite implementation follow-ups:
 
@@ -3235,9 +3241,11 @@ These packages merge R0 → R1 → R2 → R3. R1 and R2 add a reducer module ins
 
 - [x] **R0 — recovery-query contract.** Dependencies: none.
   - Primary files: `packages/agent/src/harness/session/types.ts`, `session.ts`, `memory.ts`, SQLite record storage/repository files, backend conformance, and focused recovery-query tests.
-  - Add `RecordQuery.operationKind` and `findOpenOperations(lane, { limit })` exactly as specified in sections 7, 12, and 13. Memory maintains the projection, JSONL will derive it during replay, and SQLite answers it from the lane open-operation projection.
-  - Prove that zero/one open operations are distinguishable, that normal writes cannot start a second operation on a busy lane, and that the latest run-kind start is an indexed query. Add the lane open-operation projection.
-  - Acceptance: memory and SQLite have identical query behavior, invalid query combinations reject, and no restore algorithm needs a full historical scan.
+  - Use bounded latest-first `findRecords` queries to derive the open operation and geometrically increasing latest-run lookups without a dedicated recovery-query API or dependent `RecordQuery` fields.
+  - Prove that idle/open operations are distinguishable, normal writes cannot start a second operation on a busy lane, and replay rejects the same invalid transition. Keep the lane open-operation projection as a write-side enforcement detail.
+  - Acceptance: memory and SQLite have identical generic record-query behavior and recovery discovery requires no backend-specific API.
+
+  **Potential lookup-efficiency gap after R0:** latest-run discovery examines consecutive non-run starts after the newest run and, in the worst case, every operation start. Geometric limits keep repeated work below twice the final prefix. SQLite serves each prefix from its lane/type/sequence index; further optimization is deferred until measurements show this uncommon history shape matters.
 
 - [x] **R1 — pure record-log validity.** Dependencies: R0.
   - Primary files: `packages/agent/src/harness/reducer.ts`, `packages/agent/test/harness/reducer.test.ts`.

@@ -299,14 +299,8 @@ describe("JSONL v4 persistence", () => {
 		expect(await reopened.getLabel(entryId)).toBe("checkpoint");
 		expect((await reopened.findRecords()).map((record) => record.id)).toEqual(["run"]);
 		expect(
-			(
-				await reopened.findRecords({
-					type: "operation_started",
-					operationKind: "run",
-				})
-			).map((record) => record.id),
-		).toEqual(["run"]);
-		expect((await reopened.findOpenOperations("thread", { limit: 2 })).map((record) => record.id)).toEqual(["run"]);
+			(await reopened.findRecords({ type: "operation_started" })).find((record) => record.intent.kind === "run")?.id,
+		).toBe("run");
 		expect((await reopened.getLog()).map((item) => item.seq)).toEqual([1, 2, 3, 4, 5, 6]);
 		expect(
 			(
@@ -319,7 +313,6 @@ describe("JSONL v4 persistence", () => {
 				})
 			).seq,
 		).toBe(7);
-		expect(await reopened.findOpenOperations("thread", { limit: 2 })).toEqual([]);
 	});
 
 	it("recomputes fork message counts when reopening", async () => {
@@ -677,6 +670,33 @@ describe("JSONL v4 persistence", () => {
 				},
 			],
 		},
+		{
+			name: "multiple open operations on one lane",
+			message: "while first remains open",
+			mutations: [
+				{
+					kind: "record",
+					type: "operation_started",
+					id: "first",
+					lane: "main",
+					seq: 1,
+					timestamp: 1,
+					sourceLeafId: null,
+					intent: { kind: "run", originalPrompt: [], initialMessages: [] },
+				},
+				{
+					kind: "record",
+					type: "operation_started",
+					id: "second",
+					lane: "main",
+					seq: 2,
+					timestamp: 2,
+					sourceLeafId: null,
+					intent: { kind: "run", originalPrompt: [], initialMessages: [] },
+				},
+			],
+		},
+
 		{
 			name: "a lane move referencing a missing entry",
 			message: "missing lane target",

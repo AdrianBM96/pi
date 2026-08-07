@@ -240,10 +240,6 @@ export function createSessionBackendConformance(
 			await rejectsWithCode(thread.findEntriesOnBranch({ cursor: { afterSeq: -1 } }), "invalid_query");
 			await rejectsWithCode(thread.findEntryOnBranch({ limit: 0 }), "invalid_query");
 			await rejectsWithCode(session.findRecords({ limit: 0 }), "invalid_query");
-			await rejectsWithCode(session.findRecords({ operationKind: "run" }), "invalid_query");
-			await rejectsWithCode(session.findRecords({ type: "step_attempt", operationKind: "run" }), "invalid_query");
-			await rejectsWithCode(session.findOpenOperations("main", { limit: 0 }), "invalid_query");
-			await rejectsWithCode(session.findOpenOperations("main", { limit: -1 }), "invalid_query");
 			await rejectsWithCode(session.getLog({ afterSeq: -1 }), "invalid_query");
 		}),
 
@@ -412,85 +408,94 @@ export function createSessionBackendConformance(
 			},
 		),
 
-		createCase(factory, "records and log", "filters operation starts by operation kind", async (repository) => {
+		createCase(
+			factory,
+			"records and log",
+			"supports bounded latest-first recovery discovery from generic records",
+			async (repository) => {
+				const session = await repository.create({ id: "session" });
+				await session.appendRecord(operationStarted("run-old", { lane: "main", kind: "run" }));
+				await session.appendRecord({
+					type: "operation_finished",
+					id: "run-old-finished",
+					lane: "main",
+					runId: "run-old",
+					outcome: "completed",
+				});
+				await session.appendRecord(operationStarted("compaction", { lane: "main", kind: "compaction" }));
+				await session.appendRecord({
+					type: "operation_finished",
+					id: "compaction-finished",
+					lane: "main",
+					runId: "compaction",
+					outcome: "completed",
+				});
+				await session.appendRecord(operationStarted("navigation", { lane: "main", kind: "navigation" }));
+				await session.appendRecord({
+					type: "operation_finished",
+					id: "navigation-finished",
+					lane: "main",
+					runId: "navigation",
+					outcome: "completed",
+				});
+				await session.appendRecord(operationStarted("run-new", { lane: "main", kind: "run" }));
+				await session.appendRecord({
+					type: "operation_finished",
+					id: "run-new-finished",
+					lane: "main",
+					runId: "run-new",
+					outcome: "completed",
+				});
+				await session.appendRecord(operationStarted("compaction-new", { lane: "main", kind: "compaction" }));
+				await session.appendRecord({
+					type: "operation_finished",
+					id: "compaction-new-finished",
+					lane: "main",
+					runId: "compaction-new",
+					outcome: "completed",
+				});
+				await session.appendRecord(operationStarted("navigation-new", { lane: "main", kind: "navigation" }));
+
+				const [latestStart] = await session.findRecords({
+					lane: "main",
+					type: "operation_started",
+					limit: 1,
+				});
+				if (!latestStart) throw new Error("Expected an operation start");
+				const [latestFinish] = await session.findRecords({
+					lane: "main",
+					type: "operation_finished",
+					runId: latestStart.id,
+					limit: 1,
+				});
+				strictEqual(latestStart.id, "navigation-new");
+				strictEqual(latestFinish, undefined);
+
+				let limit = 1;
+				let latestRun: OperationStartedRecord | undefined;
+				while (latestRun === undefined) {
+					const starts = await session.findRecords({
+						lane: "main",
+						type: "operation_started",
+						order: "newestFirst",
+						limit,
+					});
+					latestRun = starts.find((record) => record.intent.kind === "run");
+					if (latestRun !== undefined || starts.length < limit) break;
+					limit *= 2;
+				}
+				strictEqual(limit, 4);
+				strictEqual(latestRun?.id, "run-new");
+			},
+		),
+
+		createCase(factory, "records and log", "enforces one open operation per lane", async (repository) => {
 			const session = await repository.create({ id: "session" });
-			await session.appendRecord(operationStarted("run-old", { lane: "main", kind: "run" }));
-			await session.appendRecord({
-				type: "operation_finished",
-				id: "run-old-finished",
-				lane: "main",
-				runId: "run-old",
-				outcome: "completed",
-			});
-			await session.appendRecord(operationStarted("compaction", { lane: "main", kind: "compaction" }));
-			await session.appendRecord({
-				type: "operation_finished",
-				id: "compaction-finished",
-				lane: "main",
-				runId: "compaction",
-				outcome: "completed",
-			});
-			await session.appendRecord(operationStarted("navigation", { lane: "main", kind: "navigation" }));
-			await session.appendRecord({
-				type: "operation_finished",
-				id: "navigation-finished",
-				lane: "main",
-				runId: "navigation",
-				outcome: "completed",
-			});
-			await session.appendRecord(operationStarted("run-new", { lane: "main", kind: "run" }));
-
-			deepStrictEqual(
-				(
-					await session.findRecords({
-						type: "operation_started",
-						operationKind: "run",
-						order: "oldestFirst",
-					})
-				).map((record) => record.id),
-				["run-old", "run-new"],
-			);
-			deepStrictEqual(
-				(
-					await session.findRecords({
-						type: "operation_started",
-						operationKind: "compaction",
-					})
-				).map((record) => record.id),
-				["compaction"],
-			);
-			deepStrictEqual(
-				(
-					await session.findRecords({
-						type: "operation_started",
-						operationKind: "navigation",
-					})
-				).map((record) => record.id),
-				["navigation"],
-			);
-			deepStrictEqual(
-				(
-					await session.findRecords({
-						type: "operation_started",
-						operationKind: "run",
-						limit: 1,
-					})
-				).map((record) => record.id),
-				["run-new"],
-			);
-		}),
-
-		createCase(factory, "records and log", "tracks and enforces one open operation per lane", async (repository) => {
-			const session = await repository.create({ id: "session" });
-			deepStrictEqual(await session.findOpenOperations("main", { limit: 2 }), []);
-
 			const first = await session.appendRecord(operationStarted("first", { lane: "main", kind: "run" }));
-			deepStrictEqual(await session.findOpenOperations("main", { limit: 2 }), [first]);
 			await rejectsWithCode(
 				session.appendRecord(operationStarted("second", { lane: "main", kind: "run" })),
 				"storage",
 			);
-			deepStrictEqual(await session.findOpenOperations("main", { limit: 2 }), [first]);
 
 			await session.appendRecord({
 				type: "operation_finished",
@@ -499,7 +504,7 @@ export function createSessionBackendConformance(
 				runId: first.id,
 				outcome: "completed",
 			});
-			deepStrictEqual(await session.findOpenOperations("main", { limit: 2 }), []);
+			await session.appendRecord(operationStarted("second", { lane: "main", kind: "run" }));
 		}),
 
 		createCase(
@@ -515,38 +520,29 @@ export function createSessionBackendConformance(
 					runId: "run",
 					outcome: "completed",
 				});
-				const started = await session.appendRecord(operationStarted("run", { lane: "main", kind: "run" }));
-				deepStrictEqual(await session.findOpenOperations("main", { limit: 2 }), [started]);
+				await session.appendRecord(operationStarted("run", { lane: "main", kind: "run" }));
+				await rejectsWithCode(
+					session.appendRecord(operationStarted("second", { lane: "main", kind: "run" })),
+					"storage",
+				);
 			},
 		),
 
-		createCase(factory, "records and log", "scopes open operations by lane and limit", async (repository) => {
+		createCase(factory, "records and log", "scopes open-operation enforcement by lane", async (repository) => {
 			const session = await repository.create({ id: "session" });
 			await session.createLane("thread", null);
-			const mainRun = await session.appendRecord(operationStarted("main-run", { lane: "main", kind: "run" }));
-			const threadNavigation = await session.appendRecord(
-				operationStarted("thread-navigation", { lane: "thread", kind: "navigation" }),
+			await session.appendRecord(operationStarted("main-run", { lane: "main", kind: "run" }));
+			await session.appendRecord(operationStarted("thread-navigation", { lane: "thread", kind: "navigation" }));
+
+			await rejectsWithCode(
+				session.appendRecord(operationStarted("main-second", { lane: "main", kind: "run" })),
+				"storage",
 			);
-
-			deepStrictEqual(await session.findOpenOperations("main"), [mainRun]);
-			deepStrictEqual(await session.findOpenOperations("main", { limit: 1 }), [mainRun]);
-			deepStrictEqual(await session.findOpenOperations("thread", { limit: 2 }), [threadNavigation]);
+			await rejectsWithCode(
+				session.appendRecord(operationStarted("thread-second", { lane: "thread", kind: "run" })),
+				"storage",
+			);
 		}),
-
-		createCase(
-			factory,
-			"validation and immutability",
-			"returns immutable open-operation records",
-			async (repository) => {
-				const session = await repository.create({ id: "session" });
-				const committed = await session.appendRecord(operationStarted("run", { lane: "main", kind: "run" }));
-				const [read] = await session.findOpenOperations("main");
-				if (read?.intent.kind !== "run") throw new Error("Expected an open run operation");
-				read.intent.originalPrompt.push(createUserMessage("mutated"));
-
-				deepStrictEqual(await session.findOpenOperations("main"), [committed]);
-			},
-		),
 
 		createCase(
 			factory,

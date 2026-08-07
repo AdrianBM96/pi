@@ -246,8 +246,6 @@ export interface RecordQuery {
 	 * identity do not match.
 	 */
 	runId?: string;
-	/** Exact operation intent kind. Valid only with type "operation_started". */
-	operationKind?: OperationStartedRecord["intent"]["kind"];
 	/** Exclusive chronological lower bound: seq > afterSeq, regardless of order. */
 	afterSeq?: number;
 	/** Sequence order. Default: "newestFirst". */
@@ -308,13 +306,6 @@ export interface SessionStorage<TMetadata extends SessionMetadata = SessionMetad
 		query: RecordQuery & { type: K },
 	): Promise<Extract<LaneRecord, { type: K }>[]>;
 	findRecords(query?: RecordQuery): Promise<LaneRecord[]>;
-	/**
-	 * Returns unfinished operation starts newest first. Recovery uses `limit: 2`:
-	 * zero results mean the lane is idle, one means it is suspended, and two
-	 * mean at least two operations are open, which is corruption. Further
-	 * results provide no additional recovery state.
-	 */
-	findOpenOperations(lane: string, options?: { limit?: number }): Promise<OperationStartedRecord[]>;
 	getLog(options?: { afterSeq?: number; limit?: number }): Promise<LogItem[]>;
 
 	// Global facts
