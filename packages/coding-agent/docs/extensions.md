@@ -2882,12 +2882,6 @@ const typescriptLines = highlightCode("const x = 1;", "typescript");
 // Detect language from a file path
 const lang = getLanguageFromPath("/path/to/file.rs");  // "rust"
 const fileLines = highlightCode(code, lang);
-
-// Uncommon grammars load lazily. In a tool renderer, request another render
-// after the grammar and its dependencies are ready.
-const lazyLines = highlightCode(code, lang, {
-  onLanguageReady: context.invalidate,
-});
 ```
 
 ## Error Handling

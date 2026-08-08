@@ -1,5 +1,10 @@
 import hljs, { type LanguageDefinition } from "highlight.js/lib/core.js";
-import { HIGHLIGHT_LANGUAGES, type HighlightLanguage } from "./highlight-languages.ts";
+import {
+	HIGHLIGHT_LANGUAGE_ALIASES,
+	HIGHLIGHT_LANGUAGE_DEFINITIONS,
+	HIGHLIGHT_LANGUAGE_DEPENDENCIES,
+	HIGHLIGHT_LANGUAGE_LOADERS,
+} from "./highlight-languages.ts";
 import { decodeHtmlEntityAt } from "./html.ts";
 
 export type HighlightFormatter = (text: string) => string;
@@ -12,64 +17,45 @@ export interface HighlightOptions {
 	theme?: HighlightTheme;
 }
 
-const LANGUAGE_BY_NAME = new Map<string, HighlightLanguage>();
-for (const language of HIGHLIGHT_LANGUAGES) {
-	LANGUAGE_BY_NAME.set(language.name, language);
-	for (const alias of language.aliases ?? []) LANGUAGE_BY_NAME.set(alias.toLowerCase(), language);
-}
-
-const LANGUAGE_BY_EXTENSION = new Map(
-	HIGHLIGHT_LANGUAGES.flatMap(({ name, extensions = [] }) =>
-		extensions.map((extension) => [extension, name] as const),
-	),
-);
-
-const registeredLanguages = new Set<string>();
-
-function registerLanguage(language: HighlightLanguage, definition: LanguageDefinition): void {
-	if (registeredLanguages.has(language.name)) return;
-	hljs.registerLanguage(language.name, definition);
-	registeredLanguages.add(language.name);
-}
-
-for (const language of HIGHLIGHT_LANGUAGES) {
-	if (language.definition) registerLanguage(language, language.definition);
+interface HighlightLanguage {
+	name: string;
+	definition: LanguageDefinition;
 }
 
 type HighlightLanguageLoadEvent =
-	| { language: string; requiresGlobalRefresh: boolean }
+	| { language: string; languages: HighlightLanguage[] }
 	| { language: string; error: unknown };
 type HighlightLanguageLoadListener = (event: HighlightLanguageLoadEvent) => void;
 
-interface LanguageLoadState {
-	definition?: LanguageDefinition;
-	promise: Promise<LanguageDefinition>;
-}
-
-interface LanguageRequestState {
-	promise: Promise<boolean>;
-	callbacks: Set<() => void>;
-	requiresGlobalRefresh: boolean;
-	status: "pending" | "ready" | "failed";
-}
-
 interface LanguageRegistryState {
-	loads: Map<string, LanguageLoadState>;
+	definitions: Map<string, Promise<LanguageDefinition>>;
+	requests: Map<string, Promise<HighlightLanguage[]>>;
 	listeners: Set<HighlightLanguageLoadListener>;
-	requests?: Map<string, LanguageRequestState>;
 }
 
-// jiti can evaluate this module more than once. Sharing imported definitions
-// and listeners lets extension-triggered loads refresh the host TUI.
-const LANGUAGE_REGISTRY_KEY = Symbol.for("@earendil-works/pi-coding-agent:highlight-language-loaders-v3");
+// jiti can evaluate this module more than once. Share imported definitions and
+// listeners so extension-triggered loads still refresh the host TUI.
+const LANGUAGE_REGISTRY_KEY = Symbol.for("@earendil-works/pi-coding-agent:highlight-language-loaders-v4");
 const globalRegistry = globalThis as Record<symbol, LanguageRegistryState | undefined>;
 const languageRegistry: LanguageRegistryState = globalRegistry[LANGUAGE_REGISTRY_KEY] ?? {
-	loads: new Map(),
+	definitions: new Map(),
+	requests: new Map(),
 	listeners: new Set(),
 };
 globalRegistry[LANGUAGE_REGISTRY_KEY] = languageRegistry;
-if (!languageRegistry.requests) languageRegistry.requests = new Map();
-const languageRequests = languageRegistry.requests;
+
+const registeredLanguages = new Set<string>();
+for (const [name, definition] of Object.entries(HIGHLIGHT_LANGUAGE_DEFINITIONS)) {
+	hljs.registerLanguage(name, definition);
+	registeredLanguages.add(name);
+}
+
+function getCanonicalLanguageName(name: string): string | undefined {
+	if (Object.hasOwn(HIGHLIGHT_LANGUAGE_DEFINITIONS, name) || Object.hasOwn(HIGHLIGHT_LANGUAGE_LOADERS, name)) {
+		return name;
+	}
+	return HIGHLIGHT_LANGUAGE_ALIASES.get(name);
+}
 
 function notifyLanguageLoad(event: HighlightLanguageLoadEvent): void {
 	if (languageRegistry.listeners.size > 0) {
@@ -80,129 +66,91 @@ function notifyLanguageLoad(event: HighlightLanguageLoadEvent): void {
 	}
 }
 
-function getLanguageClosure(language: HighlightLanguage): HighlightLanguage[] {
-	const result: HighlightLanguage[] = [];
-	const visited = new Set<string>();
-	const visit = (current: HighlightLanguage) => {
-		if (visited.has(current.name)) return;
-		visited.add(current.name);
-		for (const dependencyName of current.dependencies ?? []) {
-			const dependency = LANGUAGE_BY_NAME.get(dependencyName);
-			if (dependency) visit(dependency);
-		}
-		result.push(current);
-	};
-	visit(language);
-	return result;
-}
+function loadLanguageDefinition(name: string): Promise<LanguageDefinition> {
+	const eagerDefinition = HIGHLIGHT_LANGUAGE_DEFINITIONS[name];
+	if (eagerDefinition) return Promise.resolve(eagerDefinition);
 
-function ensureLanguagesRegistered(languages: HighlightLanguage[], requestedName: string): boolean {
-	for (const language of languages) {
-		const definition = language.definition ?? languageRegistry.loads.get(language.name)?.definition;
-		if (definition) registerLanguage(language, definition);
-	}
-	return (
-		languages.every(
-			(language) =>
-				registeredLanguages.has(language.name) ||
-				(!language.definition && !language.load && supportsLanguage(language.name)),
-		) && supportsLanguage(requestedName)
-	);
-}
-
-function loadLanguageDefinition(language: HighlightLanguage): Promise<LanguageDefinition> | undefined {
-	if (language.definition) return Promise.resolve(language.definition);
-	if (!language.load) return undefined;
-
-	let state = languageRegistry.loads.get(language.name);
-	if (!state) {
-		const promise = Promise.resolve()
-			.then(language.load)
+	let promise = languageRegistry.definitions.get(name);
+	if (!promise) {
+		const loader = HIGHLIGHT_LANGUAGE_LOADERS[name];
+		promise = Promise.resolve()
+			.then(loader)
 			.then(
-				({ default: definition }) => {
-					const currentState = languageRegistry.loads.get(language.name);
-					if (currentState) currentState.definition = definition;
-					return definition;
-				},
+				({ default: definition }) => definition,
 				(error: unknown) => {
-					notifyLanguageLoad({ language: language.name, error });
+					notifyLanguageLoad({ language: name, error });
 					throw error;
 				},
 			);
-		state = { promise };
-		languageRegistry.loads.set(language.name, state);
+		languageRegistry.definitions.set(name, promise);
 	}
-	return state.promise;
+	return promise;
 }
 
-function getLanguageRequest(language: HighlightLanguage, languages: HighlightLanguage[]): LanguageRequestState {
-	let request = languageRequests.get(language.name);
-	if (request) return request;
-
-	const callbacks = new Set<() => void>();
-	const promises: Promise<LanguageDefinition>[] = [];
-	for (const current of languages) {
-		const promise = loadLanguageDefinition(current);
-		if (promise) promises.push(promise);
+async function loadLanguageClosure(name: string, visited = new Set<string>()): Promise<HighlightLanguage[]> {
+	if (visited.has(name)) return [];
+	visited.add(name);
+	const definition = await loadLanguageDefinition(name);
+	const languages: HighlightLanguage[] = [];
+	for (const dependency of HIGHLIGHT_LANGUAGE_DEPENDENCIES.get(name) ?? []) {
+		languages.push(...(await loadLanguageClosure(dependency, visited)));
 	}
-	const promise = Promise.all(promises).then(() => ensureLanguagesRegistered(languages, language.name));
-	request = { promise, callbacks, requiresGlobalRefresh: false, status: "pending" };
-	languageRequests.set(language.name, request);
-	void promise.then(
-		(ready) => {
-			request.status = ready ? "ready" : "failed";
-			if (ready) {
-				for (const callback of callbacks) callback();
-				notifyLanguageLoad({ language: language.name, requiresGlobalRefresh: request.requiresGlobalRefresh });
-			}
-			callbacks.clear();
-		},
-		() => {
-			request.status = "failed";
-			callbacks.clear();
-		},
-	);
+	languages.push({ name, definition });
+	return languages;
+}
+
+function registerLanguages(languages: HighlightLanguage[], requestedName: string): boolean {
+	for (const { name, definition } of languages) {
+		if (registeredLanguages.has(name)) continue;
+		hljs.registerLanguage(name, definition);
+		registeredLanguages.add(name);
+	}
+	return registeredLanguages.has(requestedName);
+}
+
+function getLanguageRequest(name: string): Promise<HighlightLanguage[]> {
+	let request = languageRegistry.requests.get(name);
+	if (!request) {
+		request = loadLanguageClosure(name);
+		languageRegistry.requests.set(name, request);
+		void request.then(
+			(languages) => notifyLanguageLoad({ language: name, languages }),
+			() => {},
+		);
+	}
 	return request;
 }
 
 export function onHighlightLanguageLoad(listener: HighlightLanguageLoadListener): () => void {
-	languageRegistry.listeners.add(listener);
-	return () => languageRegistry.listeners.delete(listener);
+	const localListener: HighlightLanguageLoadListener = (event) => {
+		if ("languages" in event) registerLanguages(event.languages, event.language);
+		listener(event);
+	};
+	languageRegistry.listeners.add(localListener);
+	return () => languageRegistry.listeners.delete(localListener);
 }
 
 export async function loadHighlightLanguage(name: string): Promise<boolean> {
 	const normalizedName = name.toLowerCase();
-	const language = LANGUAGE_BY_NAME.get(normalizedName);
-	if (!language) return supportsLanguage(normalizedName);
-
-	const languages = getLanguageClosure(language);
-	if (ensureLanguagesRegistered(languages, language.name)) return true;
-	const request = getLanguageRequest(language, languages);
-	request.requiresGlobalRefresh = true;
-	return request.promise;
+	const canonicalName = getCanonicalLanguageName(normalizedName);
+	if (!canonicalName) return supportsLanguage(normalizedName);
+	if (registeredLanguages.has(canonicalName)) return true;
+	return registerLanguages(await getLanguageRequest(canonicalName), canonicalName);
 }
 
 /** Return the canonical grammar when ready, starting a background load when needed. */
-export function requestHighlightLanguage(name: string, onReady?: () => void): string | undefined {
+export function requestHighlightLanguage(name: string): string | undefined {
 	const normalizedName = name.toLowerCase();
-	const language = LANGUAGE_BY_NAME.get(normalizedName);
-	if (!language) return supportsLanguage(normalizedName) ? normalizedName : undefined;
-
-	const languages = getLanguageClosure(language);
-	if (ensureLanguagesRegistered(languages, language.name)) return language.name;
-	if (!languages.some((current) => current.load)) return undefined;
-
-	const request = getLanguageRequest(language, languages);
-	if (request.status === "pending") {
-		if (onReady) request.callbacks.add(onReady);
-		else request.requiresGlobalRefresh = true;
+	const canonicalName = getCanonicalLanguageName(normalizedName);
+	if (!canonicalName) return supportsLanguage(normalizedName) ? normalizedName : undefined;
+	if (registeredLanguages.has(canonicalName)) {
+		return normalizedName === "html" || normalizedName === "toml" ? normalizedName : canonicalName;
 	}
+	void getLanguageRequest(canonicalName).then(
+		(languages) => registerLanguages(languages, canonicalName),
+		() => {},
+	);
 	return undefined;
-}
-
-export function getLanguageFromPath(filePath: string): string | undefined {
-	const extension = filePath.split(".").pop()?.toLowerCase();
-	return extension ? LANGUAGE_BY_EXTENSION.get(extension) : undefined;
 }
 
 const SPAN_CLOSE = "</span>";

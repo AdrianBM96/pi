@@ -393,7 +393,6 @@ export {
 	getMarkdownTheme,
 	getSelectListTheme,
 	getSettingsListTheme,
-	type HighlightCodeOptions,
 	highlightCode,
 	initTheme,
 	Theme,

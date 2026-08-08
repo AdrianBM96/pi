@@ -26,8 +26,6 @@ export class InteractiveThemeController {
 	private autoSyncEnabled = false;
 	private terminalColorSchemeUnsubscribe: (() => void) | undefined;
 	private highlightLanguageLoadUnsubscribe: (() => void) | undefined;
-	private highlightLanguageRefreshTimer: ReturnType<typeof setTimeout> | undefined;
-	private highlightLanguageGlobalRefreshPending = false;
 
 	constructor(ui: TUI, settingsManager: SettingsManager, showError: (message: string) => void, onChanged: () => void) {
 		this.ui = ui;
@@ -42,14 +40,8 @@ export class InteractiveThemeController {
 				this.showError(`Failed to load syntax highlighting language "${event.language}": ${message}`);
 				return;
 			}
-			this.highlightLanguageGlobalRefreshPending ||= event.requiresGlobalRefresh;
-			if (this.highlightLanguageRefreshTimer !== undefined) return;
-			this.highlightLanguageRefreshTimer = setTimeout(() => {
-				this.highlightLanguageRefreshTimer = undefined;
-				if (this.highlightLanguageGlobalRefreshPending) this.ui.invalidate();
-				this.highlightLanguageGlobalRefreshPending = false;
-				this.ui.requestRender();
-			}, 0);
+			this.ui.invalidate();
+			this.ui.requestRender();
 		});
 		this.bindTerminalColorSchemeListener();
 	}
@@ -117,9 +109,6 @@ export class InteractiveThemeController {
 		this.terminalColorSchemeUnsubscribe = undefined;
 		this.highlightLanguageLoadUnsubscribe?.();
 		this.highlightLanguageLoadUnsubscribe = undefined;
-		if (this.highlightLanguageRefreshTimer !== undefined) clearTimeout(this.highlightLanguageRefreshTimer);
-		this.highlightLanguageRefreshTimer = undefined;
-		this.highlightLanguageGlobalRefreshPending = false;
 	}
 
 	getTerminalTheme(): TerminalTheme {
