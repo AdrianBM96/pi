@@ -108,6 +108,7 @@ export class HarnessEventBus implements Events {
 	watch<TSnapshot>(captureSnapshot: () => TSnapshot): WatchHandle<TSnapshot> {
 		let listener: HarnessEventListener | undefined;
 		let buffered: HarnessEvent[] = [];
+		let started = false;
 		const receive = (event: HarnessEvent): void => {
 			if (listener) this.deliver(listener, event);
 			else buffered.push(event);
@@ -118,6 +119,10 @@ export class HarnessEventBus implements Events {
 		return {
 			snapshot,
 			start: (nextListener) => {
+				// A second start() would otherwise silently replace the active listener.
+				if (started) throw new Error("Watch has already started");
+				// Mark the handle started before flushing so a reentrant start() also fails.
+				started = true;
 				// Stay in buffering mode while flushing so reentrant emissions preserve order.
 				while (buffered.length > 0) {
 					const pending = buffered;

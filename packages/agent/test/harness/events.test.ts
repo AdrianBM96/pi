@@ -13,6 +13,12 @@ const runStartEvent: RunStartEvent = {
 	runId: "run-1",
 };
 
+const laterRunStartEvent: RunStartEvent = {
+	type: "run_start",
+	lane: "main",
+	runId: "run-2",
+};
+
 const runEndEvent: RunEndEvent = {
 	type: "run_end",
 	lane: "main",
@@ -41,6 +47,68 @@ describe("HarnessEventBus", () => {
 
 		expect(direct).toEqual([runStartEvent]);
 		expect(watchEvents).toEqual([runStartEvent, runEndEvent, runStartEvent]);
+	});
+
+	it("preserves order for events emitted while a watcher flushes", () => {
+		const events = new HarnessEventBus();
+		// The snapshot is irrelevant here; the handle starts buffering immediately.
+		const watch = events.watch(() => null);
+		const received: HarnessEvent[] = [];
+		let reentered = false;
+		// This first event is buffered because the watcher is not started yet.
+		events.emit(runStartEvent);
+
+		watch.start((event) => {
+			// Reentrantly emit an event while start() flushes the buffered run_start.
+			// It must remain buffered and follow the event currently being delivered.
+			received.push(event);
+			if (event.type === "run_start" && !reentered) {
+				reentered = true;
+				events.emit(runEndEvent);
+			}
+		});
+		// start() has now installed the listener, so this later run event is delivered live.
+		events.emit(laterRunStartEvent);
+
+		expect(received).toEqual([runStartEvent, runEndEvent, laterRunStartEvent]);
+	});
+
+	it("flushes each buffered event once before live delivery", () => {
+		const events = new HarnessEventBus();
+		const watch = events.watch(() => null);
+		const received: HarnessEvent[] = [];
+		// Both events are buffered before start() installs the live listener.
+		events.emit(runStartEvent);
+		events.emit(runEndEvent);
+
+		watch.start((event) => {
+			received.push(event);
+		});
+		// This event is delivered live, after the buffer has been flushed and cleared.
+		events.emit(laterRunStartEvent);
+
+		expect(received).toEqual([runStartEvent, runEndEvent, laterRunStartEvent]);
+	});
+
+	it("rejects repeated start calls", () => {
+		const events = new HarnessEventBus();
+		const watch = events.watch(() => null);
+		const firstReceived: HarnessEvent[] = [];
+		const secondReceived: HarnessEvent[] = [];
+		events.emit(runStartEvent);
+
+		watch.start((event) => {
+			firstReceived.push(event);
+		});
+		expect(() => {
+			watch.start((event) => {
+				secondReceived.push(event);
+			});
+		}).toThrow("Watch has already started");
+		events.emit(runEndEvent);
+
+		expect(firstReceived).toEqual([runStartEvent, runEndEvent]);
+		expect(secondReceived).toEqual([]);
 	});
 
 	it("reports ordinary listener failures as handler_error events", () => {
