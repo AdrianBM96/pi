@@ -7,6 +7,9 @@ const TimestampSchema = Type.Integer({ minimum: 0 });
 const StrictObject = <const T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
 	Type.Object(properties, { additionalProperties: false });
 
+// Keep explicit types on composite schema exports. Inference recursively expands
+// referenced TypeBox schemas in declarations, multiplying downstream checker work.
+
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 const JsonValueRecursiveSchema = Type.Cyclic(
 	{
@@ -57,7 +60,19 @@ export const ModelCostSchema = StrictObject({
 	cacheWrite: Type.Number({ minimum: 0 }),
 });
 
-export const ModelMetadataSchema = StrictObject({
+export const ModelMetadataSchema: Type.TObject<{
+	readonly provider: typeof IdSchema;
+	readonly id: typeof IdSchema;
+	readonly name: Type.TString;
+	readonly api: typeof IdSchema;
+	readonly reasoning: Type.TBoolean;
+	readonly input: Type.TArray<Type.TUnion<[Type.TLiteral<"text">, Type.TLiteral<"image">]>>;
+	readonly contextWindow: Type.TInteger;
+	readonly maxTokens: Type.TInteger;
+	readonly cost: typeof ModelCostSchema;
+	readonly supportedThinkingLevels: Type.TArray<typeof ThinkingLevelSchema>;
+	readonly authenticated: Type.TBoolean;
+}> = StrictObject({
 	provider: IdSchema,
 	id: IdSchema,
 	name: Type.String({ minLength: 1 }),
@@ -92,9 +107,17 @@ export const ToolCallContentSchema = StrictObject({
 	toolName: IdSchema,
 	input: JsonValueSchema,
 });
-export const UserContentSchema = Type.Union([TextContentSchema, ImageContentSchema]);
-export const AssistantContentSchema = Type.Union([TextContentSchema, ThinkingContentSchema, ToolCallContentSchema]);
-export const ToolContentSchema = Type.Union([TextContentSchema, ImageContentSchema]);
+export const UserContentSchema: Type.TUnion<[typeof TextContentSchema, typeof ImageContentSchema]> = Type.Union([
+	TextContentSchema,
+	ImageContentSchema,
+]);
+export const AssistantContentSchema: Type.TUnion<
+	[typeof TextContentSchema, typeof ThinkingContentSchema, typeof ToolCallContentSchema]
+> = Type.Union([TextContentSchema, ThinkingContentSchema, ToolCallContentSchema]);
+export const ToolContentSchema: Type.TUnion<[typeof TextContentSchema, typeof ImageContentSchema]> = Type.Union([
+	TextContentSchema,
+	ImageContentSchema,
+]);
 export type TextContent = Static<typeof TextContentSchema>;
 export type ThinkingContent = Static<typeof ThinkingContentSchema>;
 export type ImageContent = Static<typeof ImageContentSchema>;
@@ -117,7 +140,12 @@ export const UsageSchema = StrictObject({
 });
 export type Usage = Static<typeof UsageSchema>;
 
-export const UserTranscriptItemSchema = StrictObject({
+export const UserTranscriptItemSchema: Type.TObject<{
+	readonly id: typeof IdSchema;
+	readonly role: Type.TLiteral<"user">;
+	readonly content: Type.TArray<typeof UserContentSchema>;
+	readonly timestamp: typeof TimestampSchema;
+}> = StrictObject({
 	id: IdSchema,
 	role: Type.Literal("user"),
 	content: Type.Array(UserContentSchema),
@@ -153,7 +181,14 @@ const AbortedAssistantTranscriptItemSchema = StrictObject({
 	stopReason: Type.Literal("aborted"),
 	errorMessage: Type.Optional(Type.String()),
 });
-export const AssistantTranscriptItemSchema = Type.Union([
+export const AssistantTranscriptItemSchema: Type.TUnion<
+	[
+		typeof StreamingAssistantTranscriptItemSchema,
+		typeof CompleteAssistantTranscriptItemSchema,
+		typeof ErrorAssistantTranscriptItemSchema,
+		typeof AbortedAssistantTranscriptItemSchema,
+	]
+> = Type.Union([
 	StreamingAssistantTranscriptItemSchema,
 	CompleteAssistantTranscriptItemSchema,
 	ErrorAssistantTranscriptItemSchema,
@@ -185,48 +220,82 @@ const ErrorToolTranscriptItemSchema = StrictObject({
 	status: Type.Literal("error"),
 	isError: Type.Literal(true),
 });
-export const ToolTranscriptItemSchema = Type.Union([
-	RunningToolTranscriptItemSchema,
-	CompleteToolTranscriptItemSchema,
-	ErrorToolTranscriptItemSchema,
-]);
-export const TranscriptItemSchema = Type.Union([
-	UserTranscriptItemSchema,
-	AssistantTranscriptItemSchema,
-	ToolTranscriptItemSchema,
-]);
+export const ToolTranscriptItemSchema: Type.TUnion<
+	[
+		typeof RunningToolTranscriptItemSchema,
+		typeof CompleteToolTranscriptItemSchema,
+		typeof ErrorToolTranscriptItemSchema,
+	]
+> = Type.Union([RunningToolTranscriptItemSchema, CompleteToolTranscriptItemSchema, ErrorToolTranscriptItemSchema]);
+export const TranscriptItemSchema: Type.TUnion<
+	[typeof UserTranscriptItemSchema, typeof AssistantTranscriptItemSchema, typeof ToolTranscriptItemSchema]
+> = Type.Union([UserTranscriptItemSchema, AssistantTranscriptItemSchema, ToolTranscriptItemSchema]);
 export type UserTranscriptItem = Static<typeof UserTranscriptItemSchema>;
 export type AssistantTranscriptItem = Static<typeof AssistantTranscriptItemSchema>;
 export type ToolTranscriptItem = Static<typeof ToolTranscriptItemSchema>;
 export type TranscriptItem = Static<typeof TranscriptItemSchema>;
 
 /** Normalized incremental activity. Snapshots remain authoritative. */
-export const TranscriptProgressSchema = Type.Union([
-	StrictObject({
-		type: Type.Literal("item_started"),
-		item: TranscriptItemSchema,
-	}),
-	StrictObject({
-		type: Type.Literal("assistant_delta"),
-		messageId: IdSchema,
-		contentIndex: Type.Integer({ minimum: 0 }),
-		kind: Type.Union([Type.Literal("text"), Type.Literal("thinking"), Type.Literal("toolCall")]),
-		delta: Type.String(),
-	}),
-	StrictObject({
-		type: Type.Literal("item_updated"),
-		item: Type.Union([AssistantTranscriptItemSchema, ToolTranscriptItemSchema]),
-	}),
-	StrictObject({
-		type: Type.Literal("item_finished"),
-		item: Type.Union([
-			CompleteAssistantTranscriptItemSchema,
-			ErrorAssistantTranscriptItemSchema,
-			AbortedAssistantTranscriptItemSchema,
-			CompleteToolTranscriptItemSchema,
-			ErrorToolTranscriptItemSchema,
-		]),
-	}),
+const TranscriptItemStartedSchema: Type.TObject<{
+	readonly type: Type.TLiteral<"item_started">;
+	readonly item: typeof TranscriptItemSchema;
+}> = StrictObject({
+	type: Type.Literal("item_started"),
+	item: TranscriptItemSchema,
+});
+const TranscriptAssistantDeltaSchema: Type.TObject<{
+	readonly type: Type.TLiteral<"assistant_delta">;
+	readonly messageId: typeof IdSchema;
+	readonly contentIndex: Type.TInteger;
+	readonly kind: Type.TUnion<[Type.TLiteral<"text">, Type.TLiteral<"thinking">, Type.TLiteral<"toolCall">]>;
+	readonly delta: Type.TString;
+}> = StrictObject({
+	type: Type.Literal("assistant_delta"),
+	messageId: IdSchema,
+	contentIndex: Type.Integer({ minimum: 0 }),
+	kind: Type.Union([Type.Literal("text"), Type.Literal("thinking"), Type.Literal("toolCall")]),
+	delta: Type.String(),
+});
+const TranscriptItemUpdatedSchema: Type.TObject<{
+	readonly type: Type.TLiteral<"item_updated">;
+	readonly item: Type.TUnion<[typeof AssistantTranscriptItemSchema, typeof ToolTranscriptItemSchema]>;
+}> = StrictObject({
+	type: Type.Literal("item_updated"),
+	item: Type.Union([AssistantTranscriptItemSchema, ToolTranscriptItemSchema]),
+});
+const TranscriptItemFinishedSchema: Type.TObject<{
+	readonly type: Type.TLiteral<"item_finished">;
+	readonly item: Type.TUnion<
+		[
+			typeof CompleteAssistantTranscriptItemSchema,
+			typeof ErrorAssistantTranscriptItemSchema,
+			typeof AbortedAssistantTranscriptItemSchema,
+			typeof CompleteToolTranscriptItemSchema,
+			typeof ErrorToolTranscriptItemSchema,
+		]
+	>;
+}> = StrictObject({
+	type: Type.Literal("item_finished"),
+	item: Type.Union([
+		CompleteAssistantTranscriptItemSchema,
+		ErrorAssistantTranscriptItemSchema,
+		AbortedAssistantTranscriptItemSchema,
+		CompleteToolTranscriptItemSchema,
+		ErrorToolTranscriptItemSchema,
+	]),
+});
+export const TranscriptProgressSchema: Type.TUnion<
+	[
+		typeof TranscriptItemStartedSchema,
+		typeof TranscriptAssistantDeltaSchema,
+		typeof TranscriptItemUpdatedSchema,
+		typeof TranscriptItemFinishedSchema,
+	]
+> = Type.Union([
+	TranscriptItemStartedSchema,
+	TranscriptAssistantDeltaSchema,
+	TranscriptItemUpdatedSchema,
+	TranscriptItemFinishedSchema,
 ]);
 export type TranscriptProgress = Static<typeof TranscriptProgressSchema>;
 
@@ -238,7 +307,22 @@ export const SessionMetadataSchema = StrictObject({
 	sessionName: Type.Optional(Type.String()),
 	cwd: Type.Optional(Type.String({ minLength: 1 })),
 });
-export const SessionSnapshotSchema = StrictObject({
+export const SessionSnapshotSchema: Type.TObject<{
+	readonly id: typeof IdSchema;
+	readonly name: Type.TOptional<Type.TString>;
+	readonly cwd: Type.TString;
+	readonly createdAt: typeof TimestampSchema;
+	readonly updatedAt: typeof TimestampSchema;
+	readonly phase: typeof SessionPhaseSchema;
+	readonly model: typeof ModelRefSchema;
+	readonly thinkingLevel: typeof ThinkingLevelSchema;
+	readonly attached: Type.TBoolean;
+	readonly locked: Type.TBoolean;
+	readonly revision: Type.TInteger;
+	readonly transcript: Type.TArray<typeof TranscriptItemSchema>;
+	readonly queuedSteer: Type.TArray<typeof UserTranscriptItemSchema>;
+	readonly queuedSteerCount: Type.TInteger;
+}> = StrictObject({
 	id: IdSchema,
 	name: Type.Optional(Type.String()),
 	cwd: Type.String({ minLength: 1 }),
@@ -257,7 +341,13 @@ export const SessionSnapshotSchema = StrictObject({
 export type SessionMetadata = Static<typeof SessionMetadataSchema>;
 export type SessionSnapshot = Static<typeof SessionSnapshotSchema>;
 
-export const ServerSnapshotSchema = StrictObject({
+export const ServerSnapshotSchema: Type.TObject<{
+	readonly serverId: typeof IdSchema;
+	readonly protocolVersion: Type.TLiteral<typeof PROTOCOL_VERSION>;
+	readonly revision: Type.TInteger;
+	readonly sessions: Type.TArray<typeof SessionMetadataSchema>;
+	readonly models: Type.TArray<typeof ModelMetadataSchema>;
+}> = StrictObject({
 	serverId: IdSchema,
 	protocolVersion: Type.Literal(PROTOCOL_VERSION),
 	revision: Type.Integer({ minimum: 0 }),
@@ -275,7 +365,11 @@ export const ProtocolErrorCodeSchema = Type.Union([
 	Type.Literal("not_implemented"),
 	Type.Literal("internal_error"),
 ]);
-export const ProtocolErrorSchema = StrictObject({
+export const ProtocolErrorSchema: Type.TObject<{
+	readonly code: typeof ProtocolErrorCodeSchema;
+	readonly message: Type.TString;
+	readonly details: Type.TOptional<typeof JsonValueSchema>;
+}> = StrictObject({
 	code: ProtocolErrorCodeSchema,
 	message: Type.String(),
 	details: Type.Optional(JsonValueSchema),
@@ -311,7 +405,19 @@ export const SetThinkingCommandSchema = StrictObject({
 	sessionId: IdSchema,
 	thinkingLevel: ThinkingLevelSchema,
 });
-export const CommandSchema = Type.Union([
+export const CommandSchema: Type.TUnion<
+	[
+		typeof ListCommandSchema,
+		typeof CreateCommandSchema,
+		typeof AttachCommandSchema,
+		typeof DetachCommandSchema,
+		typeof PromptCommandSchema,
+		typeof SteerCommandSchema,
+		typeof AbortCommandSchema,
+		typeof SetModelCommandSchema,
+		typeof SetThinkingCommandSchema,
+	]
+> = Type.Union([
 	ListCommandSchema,
 	CreateCommandSchema,
 	AttachCommandSchema,
@@ -325,31 +431,52 @@ export const CommandSchema = Type.Union([
 export type Command = Static<typeof CommandSchema>;
 export type CommandName = Command["command"];
 
-export const CreateResultSchema = StrictObject({
+export const CreateResultSchema: Type.TObject<{
+	readonly command: Type.TLiteral<"create">;
+	readonly session: typeof SessionSnapshotSchema;
+}> = StrictObject({
 	command: Type.Literal("create"),
 	session: SessionSnapshotSchema,
 });
-export const AttachResultSchema = StrictObject({
+export const AttachResultSchema: Type.TObject<{
+	readonly command: Type.TLiteral<"attach">;
+	readonly session: typeof SessionSnapshotSchema;
+}> = StrictObject({
 	command: Type.Literal("attach"),
 	session: SessionSnapshotSchema,
 });
-export const PromptResultSchema = StrictObject({
+export const PromptResultSchema: Type.TObject<{
+	readonly command: Type.TLiteral<"prompt">;
+	readonly session: typeof SessionSnapshotSchema;
+}> = StrictObject({
 	command: Type.Literal("prompt"),
 	session: SessionSnapshotSchema,
 });
-export const SteerResultSchema = StrictObject({
+export const SteerResultSchema: Type.TObject<{
+	readonly command: Type.TLiteral<"steer">;
+	readonly session: typeof SessionSnapshotSchema;
+}> = StrictObject({
 	command: Type.Literal("steer"),
 	session: SessionSnapshotSchema,
 });
-export const AbortResultSchema = StrictObject({
+export const AbortResultSchema: Type.TObject<{
+	readonly command: Type.TLiteral<"abort">;
+	readonly session: typeof SessionSnapshotSchema;
+}> = StrictObject({
 	command: Type.Literal("abort"),
 	session: SessionSnapshotSchema,
 });
-export const SetModelResultSchema = StrictObject({
+export const SetModelResultSchema: Type.TObject<{
+	readonly command: Type.TLiteral<"set_model">;
+	readonly session: typeof SessionSnapshotSchema;
+}> = StrictObject({
 	command: Type.Literal("set_model"),
 	session: SessionSnapshotSchema,
 });
-export const SetThinkingResultSchema = StrictObject({
+export const SetThinkingResultSchema: Type.TObject<{
+	readonly command: Type.TLiteral<"set_thinking">;
+	readonly session: typeof SessionSnapshotSchema;
+}> = StrictObject({
 	command: Type.Literal("set_thinking"),
 	session: SessionSnapshotSchema,
 });
@@ -362,7 +489,19 @@ export const DetachResultSchema = StrictObject({
 	command: Type.Literal("detach"),
 	sessionId: IdSchema,
 });
-export const CommandResultSchema = Type.Union([
+export const CommandResultSchema: Type.TUnion<
+	[
+		typeof ListResultSchema,
+		typeof CreateResultSchema,
+		typeof AttachResultSchema,
+		typeof DetachResultSchema,
+		typeof PromptResultSchema,
+		typeof SteerResultSchema,
+		typeof AbortResultSchema,
+		typeof SetModelResultSchema,
+		typeof SetThinkingResultSchema,
+	]
+> = Type.Union([
 	ListResultSchema,
 	CreateResultSchema,
 	AttachResultSchema,
@@ -388,61 +527,111 @@ export const ClientHelloSchema = StrictObject({
 });
 export type ClientHello = Static<typeof ClientHelloSchema>;
 
-export const RequestEnvelopeSchema = StrictObject({
+export const RequestEnvelopeSchema: Type.TObject<{
+	readonly type: Type.TLiteral<"request">;
+	readonly id: typeof IdSchema;
+	readonly request: typeof CommandSchema;
+}> = StrictObject({
 	type: Type.Literal("request"),
 	id: IdSchema,
 	request: CommandSchema,
 });
 export type RequestEnvelope = Static<typeof RequestEnvelopeSchema>;
-export const ClientMessageSchema = Type.Union([ClientHelloSchema, RequestEnvelopeSchema]);
+export const ClientMessageSchema: Type.TUnion<[typeof ClientHelloSchema, typeof RequestEnvelopeSchema]> = Type.Union([
+	ClientHelloSchema,
+	RequestEnvelopeSchema,
+]);
 export type ClientMessage = Static<typeof ClientMessageSchema>;
 
-export const ServerEventSchema = Type.Union([
-	StrictObject({ type: Type.Literal("server_snapshot"), snapshot: ServerSnapshotSchema }),
-	StrictObject({ type: Type.Literal("session_snapshot"), snapshot: SessionSnapshotSchema }),
-	StrictObject({
-		type: Type.Literal("session_progress"),
-		sessionId: IdSchema,
-		progress: TranscriptProgressSchema,
-	}),
-	StrictObject({ type: Type.Literal("session_removed"), sessionId: IdSchema }),
+const ServerSnapshotEventSchema: Type.TObject<{
+	readonly type: Type.TLiteral<"server_snapshot">;
+	readonly snapshot: typeof ServerSnapshotSchema;
+}> = StrictObject({ type: Type.Literal("server_snapshot"), snapshot: ServerSnapshotSchema });
+const SessionSnapshotEventSchema: Type.TObject<{
+	readonly type: Type.TLiteral<"session_snapshot">;
+	readonly snapshot: typeof SessionSnapshotSchema;
+}> = StrictObject({ type: Type.Literal("session_snapshot"), snapshot: SessionSnapshotSchema });
+const SessionProgressEventSchema: Type.TObject<{
+	readonly type: Type.TLiteral<"session_progress">;
+	readonly sessionId: typeof IdSchema;
+	readonly progress: typeof TranscriptProgressSchema;
+}> = StrictObject({
+	type: Type.Literal("session_progress"),
+	sessionId: IdSchema,
+	progress: TranscriptProgressSchema,
+});
+const SessionRemovedEventSchema: Type.TObject<{
+	readonly type: Type.TLiteral<"session_removed">;
+	readonly sessionId: typeof IdSchema;
+}> = StrictObject({ type: Type.Literal("session_removed"), sessionId: IdSchema });
+export const ServerEventSchema: Type.TUnion<
+	[
+		typeof ServerSnapshotEventSchema,
+		typeof SessionSnapshotEventSchema,
+		typeof SessionProgressEventSchema,
+		typeof SessionRemovedEventSchema,
+	]
+> = Type.Union([
+	ServerSnapshotEventSchema,
+	SessionSnapshotEventSchema,
+	SessionProgressEventSchema,
+	SessionRemovedEventSchema,
 ]);
 export type ServerEvent = Static<typeof ServerEventSchema>;
 
-export const ServerHelloSchema = StrictObject({
+export const ServerHelloSchema: Type.TObject<{
+	readonly type: Type.TLiteral<"hello">;
+	readonly version: Type.TLiteral<typeof PROTOCOL_VERSION>;
+	readonly connectionId: typeof IdSchema;
+	readonly snapshot: typeof ServerSnapshotSchema;
+}> = StrictObject({
 	type: Type.Literal("hello"),
 	version: Type.Literal(PROTOCOL_VERSION),
 	connectionId: IdSchema,
 	snapshot: ServerSnapshotSchema,
 });
-export const ServerHelloErrorSchema = StrictObject({
+export const ServerHelloErrorSchema: Type.TObject<{
+	readonly type: Type.TLiteral<"hello_error">;
+	readonly error: typeof ProtocolErrorSchema;
+}> = StrictObject({
 	type: Type.Literal("hello_error"),
 	error: ProtocolErrorSchema,
 });
-export const ResponseEnvelopeSchema = Type.Union([
-	StrictObject({
-		type: Type.Literal("response"),
-		id: IdSchema,
-		ok: Type.Literal(true),
-		result: CommandResultSchema,
-	}),
-	StrictObject({
-		type: Type.Literal("response"),
-		id: IdSchema,
-		ok: Type.Literal(false),
-		error: ProtocolErrorSchema,
-	}),
-]);
-export const EventEnvelopeSchema = StrictObject({
+const SuccessfulResponseEnvelopeSchema: Type.TObject<{
+	readonly type: Type.TLiteral<"response">;
+	readonly id: typeof IdSchema;
+	readonly ok: Type.TLiteral<true>;
+	readonly result: typeof CommandResultSchema;
+}> = StrictObject({
+	type: Type.Literal("response"),
+	id: IdSchema,
+	ok: Type.Literal(true),
+	result: CommandResultSchema,
+});
+const ErrorResponseEnvelopeSchema: Type.TObject<{
+	readonly type: Type.TLiteral<"response">;
+	readonly id: typeof IdSchema;
+	readonly ok: Type.TLiteral<false>;
+	readonly error: typeof ProtocolErrorSchema;
+}> = StrictObject({
+	type: Type.Literal("response"),
+	id: IdSchema,
+	ok: Type.Literal(false),
+	error: ProtocolErrorSchema,
+});
+export const ResponseEnvelopeSchema: Type.TUnion<
+	[typeof SuccessfulResponseEnvelopeSchema, typeof ErrorResponseEnvelopeSchema]
+> = Type.Union([SuccessfulResponseEnvelopeSchema, ErrorResponseEnvelopeSchema]);
+export const EventEnvelopeSchema: Type.TObject<{
+	readonly type: Type.TLiteral<"event">;
+	readonly event: typeof ServerEventSchema;
+}> = StrictObject({
 	type: Type.Literal("event"),
 	event: ServerEventSchema,
 });
-export const ServerMessageSchema = Type.Union([
-	ServerHelloSchema,
-	ServerHelloErrorSchema,
-	ResponseEnvelopeSchema,
-	EventEnvelopeSchema,
-]);
+export const ServerMessageSchema: Type.TUnion<
+	[typeof ServerHelloSchema, typeof ServerHelloErrorSchema, typeof ResponseEnvelopeSchema, typeof EventEnvelopeSchema]
+> = Type.Union([ServerHelloSchema, ServerHelloErrorSchema, ResponseEnvelopeSchema, EventEnvelopeSchema]);
 export type ServerHello = Static<typeof ServerHelloSchema>;
 export type ServerHelloError = Static<typeof ServerHelloErrorSchema>;
 export type ResponseEnvelope = Static<typeof ResponseEnvelopeSchema>;
