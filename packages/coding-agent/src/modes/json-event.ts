@@ -6,21 +6,34 @@ type ToJsonAssistantMessageEvent<T> = T extends { type: "toolcall_start"; partia
 	? WithoutPartial<T> & { id: string; toolName: string }
 	: WithoutPartial<T>;
 
-type ToJsonEvent<T> = T extends {
+type MessageUpdateEvent = Extract<AgentSessionEvent, { type: "message_update" }>;
+type JsonMessageUpdateEvent = {
 	type: "message_update";
-	assistantMessageEvent: infer TAssistantMessageEvent;
-}
-	? {
-			type: "message_update";
-			assistantMessageEvent: ToJsonAssistantMessageEvent<TAssistantMessageEvent>;
-		}
-	: T;
+	assistantMessageEvent: ToJsonAssistantMessageEvent<MessageUpdateEvent["assistantMessageEvent"]>;
+};
 
 /** Session event shape emitted by the JSON and RPC stdout protocols. */
-export type JsonAgentSessionEvent = ToJsonEvent<AgentSessionEvent>;
+export type JsonAgentSessionEvent = Exclude<AgentSessionEvent, { type: "message_update" }> | JsonMessageUpdateEvent;
 
-type MessageUpdateEvent = Extract<AgentSessionEvent, { type: "message_update" }>;
-type JsonMessageUpdateEvent = Extract<JsonAgentSessionEvent, { type: "message_update" }>;
+function toJsonAssistantMessageEvent(
+	event: MessageUpdateEvent["assistantMessageEvent"],
+): JsonMessageUpdateEvent["assistantMessageEvent"] {
+	if (event.type === "toolcall_start") {
+		const toolCall = event.partial.content[event.contentIndex];
+		if (toolCall?.type !== "toolCall") {
+			throw new Error(`toolcall_start content at index ${event.contentIndex} is not a tool call`);
+		}
+		const { partial: _partial, ...deltaEvent } = event;
+		return { ...deltaEvent, id: toolCall.id, toolName: toolCall.name };
+	}
+
+	if (!("partial" in event)) {
+		return event;
+	}
+
+	const { partial: _partial, ...deltaEvent } = event;
+	return deltaEvent;
+}
 
 /**
  * Remove cumulative assistant snapshots from streaming wire events.
@@ -35,23 +48,8 @@ export function toJsonEvent(event: AgentSessionEvent): JsonAgentSessionEvent {
 		return event;
 	}
 
-	const assistantMessageEvent = event.assistantMessageEvent;
-	if (assistantMessageEvent.type === "toolcall_start") {
-		const toolCall = assistantMessageEvent.partial.content[assistantMessageEvent.contentIndex];
-		if (toolCall?.type !== "toolCall") {
-			throw new Error(`toolcall_start content at index ${assistantMessageEvent.contentIndex} is not a tool call`);
-		}
-		const { partial: _partial, ...deltaEvent } = assistantMessageEvent;
-		return {
-			type: "message_update",
-			assistantMessageEvent: { ...deltaEvent, id: toolCall.id, toolName: toolCall.name },
-		};
-	}
-
-	if (!("partial" in assistantMessageEvent)) {
-		return { type: "message_update", assistantMessageEvent };
-	}
-
-	const { partial: _partial, ...deltaEvent } = assistantMessageEvent;
-	return { type: "message_update", assistantMessageEvent: deltaEvent };
+	return {
+		type: "message_update",
+		assistantMessageEvent: toJsonAssistantMessageEvent(event.assistantMessageEvent),
+	};
 }
