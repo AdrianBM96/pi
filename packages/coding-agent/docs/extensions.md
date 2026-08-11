@@ -1020,47 +1020,22 @@ Control flow helpers. `ctx.isIdle()` is false while Pi is processing an agent ru
 
 ### ctx.requestReload()
 
-Request the same canonical runtime reload as `/reload` after the current extension operation safely settles.
+Schedule the same runtime reload as `/reload` after the current extension operation and agent work settle. Commands, tools, event handlers, and shortcuts can call it.
 
-Use this fire-and-forget method from commands, tools, event handlers, and shortcuts. Call it last and return from the handler. Duplicate requests are coalesced. Requests made while the agent is running wait until retries, compaction, queued messages, tool results, and `agent_settled` handlers finish. Requests made while a reload is already running are ignored, which prevents reload loops from lifecycle handlers.
-
-The method does not wait for completion, so handlers cannot catch reload failures or use the new runtime after calling it.
-
-Interactive mode preserves the normal reload UI and restores keybindings, themes, and extension UI. RPC mode reloads without model authentication or an extra model turn. Print and JSON modes ignore the request. Once session teardown begins, pending and new reload requests are discarded.
-
-RPC rejects later commands with `Runtime reload in progress` until reload finishes. Abort commands and extension UI responses remain available so lifecycle handlers cannot deadlock.
-
-If the host fails before the canonical reload starts, Pi reports the extension error and keeps the current runtime available. If reload fails after invalidating the previous runtime, Pi raises `RuntimeReloadError` and rejects later RPC commands or direct reloads instead of continuing with partial state.
-
-Command handlers use the same deferred request:
+The request is fire-and-forget. Call it last and return: the current context becomes stale when reload starts, and the handler cannot await or catch reload failures. Concurrent requests are coalesced; requests during reload are ignored, and teardown discards pending requests.
 
 ```typescript
 pi.registerCommand("reload-runtime", {
-  description: "Reload extensions, skills, prompts, themes, and context files",
+  description: "Reload runtime resources",
   handler: async (_args, ctx) => {
     ctx.requestReload();
-    return;
   },
 });
 ```
 
-Tools can request it after preparing their result:
+TUI and RPC modes support reload requests; print and JSON modes ignore them. RPC temporarily rejects non-control commands while reloading. A failure after the old runtime is invalidated raises `RuntimeReloadError` instead of leaving partial state.
 
-```typescript
-pi.registerTool({
-  name: "reload_runtime",
-  label: "Reload Runtime",
-  description: "Reload extensions, skills, prompts, themes, and context files",
-  parameters: Type.Object({}),
-  async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-    ctx.requestReload();
-    return {
-      content: [{ type: "text", text: "Reload requested." }],
-      details: {},
-    };
-  },
-});
-```
+See [reload-runtime.ts](../examples/extensions/reload-runtime.ts) for command and tool examples.
 
 ### ctx.shutdown()
 
