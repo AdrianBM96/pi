@@ -15,11 +15,15 @@ except that streaming message updates omit cumulative snapshots:
 ```typescript
 type WithoutPartial<T> = T extends { partial: unknown } ? Omit<T, "partial"> : T;
 
+type JsonAssistantMessageEvent<T> = T extends { type: "toolcall_start"; partial: unknown }
+  ? WithoutPartial<T> & { id: string; toolName: string }
+  : WithoutPartial<T>;
+
 type JsonAgentSessionEvent =
   | Exclude<AgentSessionEvent, { type: "message_update" }>
   | {
       type: "message_update";
-      assistantMessageEvent: WithoutPartial<AssistantMessageEvent>;
+      assistantMessageEvent: JsonAssistantMessageEvent<AssistantMessageEvent>;
     };
 ```
 
@@ -81,8 +85,9 @@ Followed by events as they occur:
 
 `message_update` records are delta-only. They omit both the cumulative `message` field and
 `assistantMessageEvent.partial` to keep stream size linear. Use `contentIndex` and `delta`
-to assemble live text, thinking, or tool-call arguments if needed. `message_end` contains
-the final authoritative message.
+to assemble live text, thinking, or tool-call arguments if needed. A `toolcall_start` event
+also includes the constant-sized `id` and `toolName` fields. `message_end` contains the final
+authoritative message.
 
 ## Example
 

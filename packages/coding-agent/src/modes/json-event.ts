@@ -2,13 +2,17 @@ import type { AgentSessionEvent } from "../core/agent-session.ts";
 
 type WithoutPartial<T> = T extends { partial: unknown } ? Omit<T, "partial"> : T;
 
+type ToJsonAssistantMessageEvent<T> = T extends { type: "toolcall_start"; partial: unknown }
+	? WithoutPartial<T> & { id: string; toolName: string }
+	: WithoutPartial<T>;
+
 type ToJsonEvent<T> = T extends {
 	type: "message_update";
 	assistantMessageEvent: infer TAssistantMessageEvent;
 }
 	? {
 			type: "message_update";
-			assistantMessageEvent: WithoutPartial<TAssistantMessageEvent>;
+			assistantMessageEvent: ToJsonAssistantMessageEvent<TAssistantMessageEvent>;
 		}
 	: T;
 
@@ -21,7 +25,8 @@ type JsonMessageUpdateEvent = Extract<JsonAgentSessionEvent, { type: "message_up
 /**
  * Remove cumulative assistant snapshots from streaming wire events.
  * `message_start` provides the initial message, deltas build it, and
- * `message_end` provides the final authoritative message.
+ * `message_end` provides the final authoritative message. Tool-call starts
+ * retain their constant-sized id and name so clients can identify the tool.
  */
 export function toJsonEvent(event: MessageUpdateEvent): JsonMessageUpdateEvent;
 export function toJsonEvent(event: AgentSessionEvent): JsonAgentSessionEvent;
@@ -31,6 +36,18 @@ export function toJsonEvent(event: AgentSessionEvent): JsonAgentSessionEvent {
 	}
 
 	const assistantMessageEvent = event.assistantMessageEvent;
+	if (assistantMessageEvent.type === "toolcall_start") {
+		const toolCall = assistantMessageEvent.partial.content[assistantMessageEvent.contentIndex];
+		if (toolCall?.type !== "toolCall") {
+			throw new Error(`toolcall_start content at index ${assistantMessageEvent.contentIndex} is not a tool call`);
+		}
+		const { partial: _partial, ...deltaEvent } = assistantMessageEvent;
+		return {
+			type: "message_update",
+			assistantMessageEvent: { ...deltaEvent, id: toolCall.id, toolName: toolCall.name },
+		};
+	}
+
 	if (!("partial" in assistantMessageEvent)) {
 		return { type: "message_update", assistantMessageEvent };
 	}
