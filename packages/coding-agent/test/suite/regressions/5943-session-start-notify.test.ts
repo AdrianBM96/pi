@@ -1,7 +1,7 @@
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
-import type { AgentSessionEvent, RuntimeReloadHost } from "../../../src/core/agent-session.ts";
+import type { AgentSessionEvent, RuntimeReloadHooks } from "../../../src/core/agent-session.ts";
 import type { ExtensionUIContext } from "../../../src/core/extensions/index.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { initTheme, type Theme, theme } from "../../../src/modes/interactive/theme/theme.ts";
@@ -91,7 +91,7 @@ type ReloadCommandContext = {
 	session: {
 		isStreaming: boolean;
 		isCompacting: boolean;
-		reload: (options?: { beforeSessionStart?: () => void | Promise<void> }) => Promise<void>;
+		reload: () => Promise<void>;
 		resourceLoader: { getThemes: () => { themes: [] } };
 		extensionRunner: unknown;
 		modelRuntime: { getError: () => string | undefined };
@@ -137,7 +137,7 @@ type InteractiveModePrototype = {
 	): void;
 	rebindCurrentSession(this: RebindContext, options?: { renderBeforeBind?: boolean }): Promise<void>;
 	handleReloadCommand(this: ReloadCommandContext): Promise<void>;
-	createReloadHost(this: ReloadCommandContext): RuntimeReloadHost;
+	createReloadHooks(this: ReloadCommandContext): RuntimeReloadHooks;
 };
 
 const interactiveModePrototype = InteractiveMode.prototype as unknown as InteractiveModePrototype;
@@ -162,9 +162,7 @@ function createReloadCommandContext(overrides: ReloadCommandContextOverrides = {
 		session: {
 			isStreaming: false,
 			isCompacting: false,
-			reload: async (options) => {
-				await options?.beforeSessionStart?.();
-			},
+			reload: async () => {},
 			resourceLoader: { getThemes: () => ({ themes: [] }) },
 			extensionRunner: {},
 			modelRuntime: { getError: () => undefined },
@@ -438,11 +436,12 @@ describe("regression #5943: session_start transient UI", () => {
 			await harness.session.bindExtensions({
 				uiContext: createUiContext((message) => events.push(message)),
 				mode: "tui",
+				reloadHooks: { beforeSessionStart },
 			});
 			expect(events).toEqual(["start:startup", "notify:startup"]);
 
 			events.length = 0;
-			await harness.session.reload({ beforeSessionStart });
+			await harness.session.reload();
 
 			expect(beforeSessionStart).toHaveBeenCalledTimes(1);
 			expect(events).toEqual(["render", "start:reload", "notify:reload"]);
@@ -457,22 +456,17 @@ describe("regression #5943: session_start transient UI", () => {
 		let context: ReloadCommandContext;
 		context = createReloadCommandContext({
 			settingsManager: { getHideThinkingBlock: () => true },
-			session: {
-				reload: async (options) => {
-					events.push("reload");
-					await options?.beforeSessionStart?.();
-					events.push(`start:${context.hideThinkingBlock}`);
-				},
-			},
 			rebuildChatFromMessages: () => {
 				events.push(`rebuild:${context.hideThinkingBlock}`);
 			},
 		});
 
-		const host = interactiveModePrototype.createReloadHost.call(context);
-		await host.beforeReload?.();
-		await context.session.reload({ beforeSessionStart: host.beforeSessionStart });
-		await host.afterReload?.();
+		const hooks = interactiveModePrototype.createReloadHooks.call(context);
+		await hooks.beforeReload?.();
+		events.push("reload");
+		await hooks.beforeSessionStart?.();
+		events.push(`start:${context.hideThinkingBlock}`);
+		await hooks.afterReload?.();
 
 		expect(context.hideThinkingBlock).toBe(true);
 		expect(events).toEqual(["reload", "rebuild:true", "start:true"]);
@@ -490,9 +484,9 @@ describe("regression #5943: session_start transient UI", () => {
 				},
 			},
 		});
-		const host = interactiveModePrototype.createReloadHost.call(context);
-		await host.beforeReload?.();
-		await host.reloadFailed?.(new Error("resource reload failed"));
+		const hooks = interactiveModePrototype.createReloadHooks.call(context);
+		await hooks.beforeReload?.();
+		await hooks.reloadFailed?.(new Error("resource reload failed"));
 		expect(focused).toBe(editor);
 	});
 
@@ -512,13 +506,6 @@ describe("regression #5943: session_start transient UI", () => {
 
 		const context = createReloadCommandContext({
 			editor,
-			session: {
-				reload: async (options) => {
-					await options?.beforeSessionStart?.();
-					markReloadWaiting();
-					await reloadFinished;
-				},
-			},
 			ui: {
 				setFocus: (component) => {
 					focused = component;
@@ -529,11 +516,13 @@ describe("regression #5943: session_start transient UI", () => {
 			},
 		});
 
-		const host = interactiveModePrototype.createReloadHost.call(context);
-		await host.beforeReload?.();
+		const hooks = interactiveModePrototype.createReloadHooks.call(context);
+		await hooks.beforeReload?.();
 		const reloadPromise = (async () => {
-			await context.session.reload({ beforeSessionStart: host.beforeSessionStart });
-			await host.afterReload?.();
+			await hooks.beforeSessionStart?.();
+			markReloadWaiting();
+			await reloadFinished;
+			await hooks.afterReload?.();
 		})();
 		await reloadWaiting;
 
