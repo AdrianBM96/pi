@@ -54,6 +54,7 @@ import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
+	type CompactionRequest,
 	type CompactionResult,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
@@ -1782,6 +1783,24 @@ export class AgentSession {
 	// Compaction
 	// =========================================================================
 
+	private _createCompactionRequest(strategy: CompactionRequest["strategy"], signal: AbortSignal): CompactionRequest {
+		if (strategy === "standalone") {
+			return { strategy };
+		}
+		return {
+			strategy,
+			systemPrompt: this.agent.state.systemPrompt,
+			tools: this.agent.state.tools,
+			sessionId: this.agent.sessionId,
+			convertToLlm: async (messages) => {
+				const transformedMessages = this.agent.transformContext
+					? await this.agent.transformContext(messages, signal)
+					: messages;
+				return await this.agent.convertToLlm(transformedMessages);
+			},
+		};
+	}
+
 	/**
 	 * Manually compact the session context.
 	 * Aborts current agent operation first.
@@ -1863,6 +1882,7 @@ export class AgentSession {
 					env,
 					this.settingsManager.getRetrySettings(),
 					this._summarizationRetryCallbacks({ source: "compaction", reason: "manual" }),
+					this._createCompactionRequest(settings.strategy, this._compactionAbortController.signal),
 				);
 				summary = result.summary;
 				firstKeptEntryId = result.firstKeptEntryId;
@@ -2135,6 +2155,7 @@ export class AgentSession {
 					env,
 					this.settingsManager.getRetrySettings(),
 					this._summarizationRetryCallbacks({ source: "compaction", reason }),
+					this._createCompactionRequest(settings.strategy, this._autoCompactionAbortController.signal),
 				);
 				summary = compactResult.summary;
 				firstKeptEntryId = compactResult.firstKeptEntryId;

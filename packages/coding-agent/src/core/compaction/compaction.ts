@@ -123,16 +123,30 @@ function combineUsage(first: Usage, second: Usage): Usage {
 // Types
 // ============================================================================
 
+export type CompactionStrategy = "standalone" | "append";
+
 export interface CompactionSettings {
 	enabled: boolean;
 	reserveTokens: number;
 	keepRecentTokens: number;
+	strategy: CompactionStrategy;
 }
+
+export type CompactionRequest =
+	| { strategy: "standalone" }
+	| {
+			strategy: "append";
+			systemPrompt: string;
+			tools: Context["tools"];
+			sessionId?: string;
+			convertToLlm: (messages: AgentMessage[]) => Context["messages"] | Promise<Context["messages"]>;
+	  };
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
+	strategy: "standalone",
 };
 
 // ============================================================================
@@ -692,6 +706,8 @@ export async function generateSummaryWithUsage(
 export interface CompactionPreparation {
 	/** UUID of first entry to keep */
 	firstKeptEntryId: string;
+	/** Exact current-context prefix replaced by the summary. */
+	contextPrefixMessages: AgentMessage[];
 	/** Messages that will be summarized and discarded */
 	messagesToSummarize: AgentMessage[];
 	/** Messages that will be turned into turn prefix summary (if splitting) */
@@ -746,6 +762,21 @@ export function prepareCompaction(
 
 	const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
 
+	// Build the exact context prefix being replaced. Preparation is strategy-neutral,
+	// so this is populated for both strategies but consumed only by append.
+	// On repeated compaction the previous summary precedes messages retained by that
+	// compaction, even though its session entry was appended after those messages.
+	const contextPrefixMessages: AgentMessage[] = [];
+	if (prevCompactionIndex >= 0) {
+		contextPrefixMessages.push(...sessionEntryToContextMessages(pathEntries[prevCompactionIndex]));
+	}
+	for (let i = boundaryStart; i < cutPoint.firstKeptEntryIndex; i++) {
+		const entry = pathEntries[i];
+		if (entry.type !== "compaction") {
+			contextPrefixMessages.push(...sessionEntryToContextMessages(entry));
+		}
+	}
+
 	// Messages to summarize (will be discarded after summary)
 	const messagesToSummarize: AgentMessage[] = [];
 	for (let i = boundaryStart; i < historyEnd; i++) {
@@ -778,6 +809,7 @@ export function prepareCompaction(
 
 	return {
 		firstKeptEntryId,
+		contextPrefixMessages,
 		messagesToSummarize,
 		turnPrefixMessages,
 		isSplitTurn: cutPoint.isSplitTurn,
@@ -791,6 +823,14 @@ export function prepareCompaction(
 // ============================================================================
 // Main compaction function
 // ============================================================================
+
+const APPEND_SUMMARIZATION_PROMPT = `Do not continue the task and do not call tools. Only produce the requested summary.
+
+The conversation before this message is the history being compacted. A recent suffix has been temporarily omitted and will be restored after your summary. Create a structured context checkpoint that preserves everything needed to understand and continue that suffix.
+
+${SUMMARIZATION_PROMPT}`;
+
+const SPLIT_TURN_CONTEXT_INSTRUCTION = `The retained suffix begins in the middle of the latest turn. Make sure the summary preserves the original request and the early progress needed to understand that retained suffix.`;
 
 const TURN_PREFIX_SUMMARIZATION_PROMPT = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
 
@@ -826,6 +866,7 @@ export async function compact(
 	env?: Record<string, string>,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	request: CompactionRequest = { strategy: "standalone" },
 ): Promise<CompactionResult> {
 	const {
 		firstKeptEntryId,
@@ -842,7 +883,24 @@ export async function compact(
 	let summary: string;
 	let summaryUsage: Usage;
 
-	if (isSplitTurn && turnPrefixMessages.length > 0) {
+	if (request.strategy === "append") {
+		const result = await generateAppendSummary(
+			preparation,
+			request,
+			model,
+			apiKey,
+			headers,
+			customInstructions,
+			signal,
+			thinkingLevel,
+			streamFn,
+			env,
+			retry,
+			callbacks,
+		);
+		summary = result.text;
+		summaryUsage = result.usage;
+	} else if (isSplitTurn && turnPrefixMessages.length > 0) {
 		let historyText = "No prior history.";
 		let historyUsage: Usage | undefined;
 		if (messagesToSummarize.length > 0) {
@@ -916,6 +974,69 @@ export async function compact(
 		usage: summaryUsage,
 		details: { readFiles, modifiedFiles } as CompactionDetails,
 	};
+}
+
+async function generateAppendSummary(
+	preparation: CompactionPreparation,
+	request: Extract<CompactionRequest, { strategy: "append" }>,
+	model: Model<any>,
+	apiKey: string | undefined,
+	headers?: Record<string, string>,
+	customInstructions?: string,
+	signal?: AbortSignal,
+	thinkingLevel?: ThinkingLevel,
+	streamFn?: StreamFn,
+	env?: Record<string, string>,
+	retry?: RetryPolicy,
+	callbacks?: RetryCallbacks,
+): Promise<{ text: string; usage: Usage }> {
+	const maxTokens = Math.min(
+		Math.floor(0.8 * preparation.settings.reserveTokens),
+		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+	);
+	let promptText = APPEND_SUMMARIZATION_PROMPT;
+	if (preparation.isSplitTurn) {
+		promptText += `\n\n${SPLIT_TURN_CONTEXT_INSTRUCTION}`;
+	}
+	if (customInstructions) {
+		promptText += `\n\nAdditional focus: ${customInstructions}`;
+	}
+
+	const prefixMessages = await request.convertToLlm(preparation.contextPrefixMessages);
+	const summarizationMessage = {
+		role: "user" as const,
+		content: [{ type: "text" as const, text: promptText }],
+		timestamp: Date.now(),
+	};
+	const context: Context = {
+		systemPrompt: request.systemPrompt,
+		messages: [...prefixMessages, summarizationMessage],
+		tools: request.tools,
+	};
+	const options = {
+		...createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel),
+		sessionId: request.sessionId,
+	};
+	const produce = async (): Promise<AssistantMessage> =>
+		streamFn ? (await streamFn(model, context, options)).result() : completeSimple(model, context, options);
+	const response = await retryAssistantCall(produce, retry, signal, callbacks);
+
+	if (response.stopReason === "aborted") {
+		const error = new Error("Compaction cancelled");
+		error.name = "AbortError";
+		throw error;
+	}
+	if (response.stopReason === "error") {
+		throw new Error(`Summarization failed: ${response.errorMessage || "Unknown error"}`);
+	}
+	if (response.content.some((block) => block.type === "toolCall")) {
+		throw new Error("Append compaction attempted to call a tool");
+	}
+	const text = contentText(response.content);
+	if (!text.trim()) {
+		throw new Error("Append compaction returned an empty summary");
+	}
+	return { text, usage: response.usage };
 }
 
 /**
