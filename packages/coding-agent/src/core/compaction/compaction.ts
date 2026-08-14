@@ -129,6 +129,13 @@ export interface CompactionSettings {
 	keepRecentTokens: number;
 }
 
+export interface AppendCompactionRequest {
+	systemPrompt: string;
+	tools: Context["tools"];
+	sessionId?: string;
+	contextPrefixMessages: Context["messages"];
+}
+
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
 	reserveTokens: 16384,
@@ -788,9 +795,52 @@ export function prepareCompaction(
 	};
 }
 
+/** Build the exact active-context prefix replaced by an append compaction summary. */
+export function buildAppendCompactionContextPrefix(
+	pathEntries: SessionEntry[],
+	firstKeptEntryId: string,
+): AgentMessage[] {
+	let previousCompactionIndex = -1;
+	for (let index = pathEntries.length - 1; index >= 0; index--) {
+		if (pathEntries[index].type === "compaction") {
+			previousCompactionIndex = index;
+			break;
+		}
+	}
+
+	let boundaryStart = 0;
+	const contextPrefixMessages: AgentMessage[] = [];
+	if (previousCompactionIndex >= 0) {
+		const previousCompaction = pathEntries[previousCompactionIndex] as CompactionEntry;
+		const previousFirstKeptIndex = pathEntries.findIndex((entry) => entry.id === previousCompaction.firstKeptEntryId);
+		boundaryStart = previousFirstKeptIndex >= 0 ? previousFirstKeptIndex : previousCompactionIndex + 1;
+		contextPrefixMessages.push(...sessionEntryToContextMessages(previousCompaction));
+	}
+
+	const firstKeptEntryIndex = pathEntries.findIndex((entry) => entry.id === firstKeptEntryId);
+	if (firstKeptEntryIndex < 0) {
+		throw new Error(`Compaction kept entry not found: ${firstKeptEntryId}`);
+	}
+	for (let index = boundaryStart; index < firstKeptEntryIndex; index++) {
+		const entry = pathEntries[index];
+		if (entry.type !== "compaction") {
+			contextPrefixMessages.push(...sessionEntryToContextMessages(entry));
+		}
+	}
+	return contextPrefixMessages;
+}
+
 // ============================================================================
 // Main compaction function
 // ============================================================================
+
+const APPEND_SUMMARIZATION_PROMPT = `Do not continue the task and do not call tools. Only produce the requested summary.
+
+The conversation before this message is the history being compacted. A recent suffix has been temporarily omitted and will be restored after your summary. Create a structured context checkpoint that preserves everything needed to understand and continue that suffix.
+
+${SUMMARIZATION_PROMPT}`;
+
+const SPLIT_TURN_CONTEXT_INSTRUCTION = `The retained suffix begins in the middle of the latest turn. Make sure the summary preserves the original request and the early progress needed to understand that retained suffix.`;
 
 const TURN_PREFIX_SUMMARIZATION_PROMPT = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
 
@@ -807,6 +857,20 @@ Summarize the prefix to provide context for the retained suffix:
 
 Be concise. Focus on what's needed to understand the kept suffix.`;
 
+interface CompactModeOptions {
+	readonly preparation: CompactionPreparation;
+	readonly model: Model<any>;
+	readonly apiKey: string | undefined;
+	readonly headers?: Record<string, string>;
+	readonly customInstructions?: string;
+	readonly signal?: AbortSignal;
+	readonly thinkingLevel?: ThinkingLevel;
+	readonly streamFn?: StreamFn;
+	readonly env?: Record<string, string>;
+	readonly retry?: RetryPolicy;
+	readonly callbacks?: RetryCallbacks;
+}
+
 /**
  * Generate summaries for compaction using prepared data.
  * Returns CompactionResult - SessionManager adds uuid/parentUuid when saving.
@@ -818,6 +882,7 @@ export async function compact(
 	preparation: CompactionPreparation,
 	model: Model<any>,
 	apiKey: string | undefined,
+	request: AppendCompactionRequest | null,
 	headers?: Record<string, string>,
 	customInstructions?: string,
 	signal?: AbortSignal,
@@ -827,43 +892,76 @@ export async function compact(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 ): Promise<CompactionResult> {
-	const {
-		firstKeptEntryId,
-		messagesToSummarize,
-		turnPrefixMessages,
-		isSplitTurn,
-		tokensBefore,
-		previousSummary,
-		fileOps,
-		settings,
-	} = preparation;
+	const compactOptions = {
+		preparation,
+		model,
+		apiKey,
+		headers,
+		customInstructions,
+		signal,
+		thinkingLevel,
+		streamFn,
+		env,
+		retry,
+		callbacks,
+	} satisfies CompactModeOptions;
+	const result = request
+		? await compactAppend({ ...compactOptions, request })
+		: await compactStandalone(compactOptions);
 
-	// Generate summaries and merge into one
-	let summary: string;
-	let summaryUsage: Usage;
+	const { firstKeptEntryId, tokensBefore, fileOps } = preparation;
+	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
+	const summary = result.text + formatFileOperations(readFiles, modifiedFiles);
+
+	if (!firstKeptEntryId) {
+		throw new Error("First kept entry has no UUID - session may need migration");
+	}
+
+	return {
+		summary,
+		firstKeptEntryId,
+		tokensBefore,
+		usage: result.usage,
+		details: { readFiles, modifiedFiles } as CompactionDetails,
+	};
+}
+
+/** Compact with isolated summary requests that do not reuse the active conversation prefix. */
+async function compactStandalone(options: CompactModeOptions): Promise<{ text: string; usage: Usage }> {
+	const {
+		preparation,
+		model,
+		apiKey,
+		headers,
+		customInstructions,
+		signal,
+		thinkingLevel,
+		streamFn,
+		env,
+		retry,
+		callbacks,
+	} = options;
+	const { messagesToSummarize, turnPrefixMessages, isSplitTurn, previousSummary, settings } = preparation;
 
 	if (isSplitTurn && turnPrefixMessages.length > 0) {
-		let historyText = "No prior history.";
-		let historyUsage: Usage | undefined;
-		if (messagesToSummarize.length > 0) {
-			const historyResult = await generateSummaryWithUsage(
-				messagesToSummarize,
-				model,
-				settings.reserveTokens,
-				apiKey,
-				headers,
-				signal,
-				customInstructions,
-				previousSummary,
-				thinkingLevel,
-				streamFn,
-				env,
-				retry,
-				callbacks,
-			);
-			historyText = historyResult.text;
-			historyUsage = historyResult.usage;
-		}
+		const historyResult =
+			messagesToSummarize.length > 0
+				? await generateSummaryWithUsage(
+						messagesToSummarize,
+						model,
+						settings.reserveTokens,
+						apiKey,
+						headers,
+						signal,
+						customInstructions,
+						previousSummary,
+						thinkingLevel,
+						streamFn,
+						env,
+						retry,
+						callbacks,
+					)
+				: undefined;
 		const turnPrefixResult = await generateTurnPrefixSummary(
 			turnPrefixMessages,
 			model,
@@ -877,45 +975,97 @@ export async function compact(
 			retry,
 			callbacks,
 		);
-		// Merge into single summary
-		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
-		summaryUsage = historyUsage ? combineUsage(historyUsage, turnPrefixResult.usage) : turnPrefixResult.usage;
-	} else {
-		// Just generate history summary
-		const result = await generateSummaryWithUsage(
-			messagesToSummarize,
-			model,
-			settings.reserveTokens,
-			apiKey,
-			headers,
-			signal,
-			customInstructions,
-			previousSummary,
-			thinkingLevel,
-			streamFn,
-			env,
-			retry,
-			callbacks,
-		);
-		summary = result.text;
-		summaryUsage = result.usage;
+		return {
+			text: `${historyResult?.text ?? "No prior history."}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`,
+			usage: historyResult ? combineUsage(historyResult.usage, turnPrefixResult.usage) : turnPrefixResult.usage,
+		};
 	}
 
-	// Compute file lists and append to summary
-	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
-	summary += formatFileOperations(readFiles, modifiedFiles);
+	return generateSummaryWithUsage(
+		messagesToSummarize,
+		model,
+		settings.reserveTokens,
+		apiKey,
+		headers,
+		signal,
+		customInstructions,
+		previousSummary,
+		thinkingLevel,
+		streamFn,
+		env,
+		retry,
+		callbacks,
+	);
+}
 
-	if (!firstKeptEntryId) {
-		throw new Error("First kept entry has no UUID - session may need migration");
+interface CompactAppendOptions extends CompactModeOptions {
+	readonly request: AppendCompactionRequest;
+}
+
+/** Compact by appending a summary request to the active prefix so provider caches remain reusable. */
+async function compactAppend(options: CompactAppendOptions): Promise<{ text: string; usage: Usage }> {
+	const {
+		preparation,
+		request,
+		model,
+		apiKey,
+		headers,
+		customInstructions,
+		signal,
+		thinkingLevel,
+		streamFn,
+		env,
+		retry,
+		callbacks,
+	} = options;
+	const maxTokens = Math.min(
+		Math.floor(0.8 * preparation.settings.reserveTokens),
+		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+	);
+	let promptText = APPEND_SUMMARIZATION_PROMPT;
+	if (preparation.isSplitTurn) {
+		promptText += `\n\n${SPLIT_TURN_CONTEXT_INSTRUCTION}`;
+	}
+	if (customInstructions) {
+		promptText += `\n\nAdditional focus: ${customInstructions}`;
 	}
 
-	return {
-		summary,
-		firstKeptEntryId,
-		tokensBefore,
-		usage: summaryUsage,
-		details: { readFiles, modifiedFiles } as CompactionDetails,
+	const summarizationMessage = {
+		role: "user" as const,
+		content: [{ type: "text" as const, text: promptText }],
+		timestamp: Date.now(),
 	};
+	const context: Context = {
+		systemPrompt: request.systemPrompt,
+		messages: [...request.contextPrefixMessages, summarizationMessage],
+		tools: request.tools,
+	};
+	const streamOptions = {
+		...createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel),
+		sessionId: request.sessionId,
+	};
+	const produce = async (): Promise<AssistantMessage> =>
+		streamFn
+			? (await streamFn(model, context, streamOptions)).result()
+			: completeSimple(model, context, streamOptions);
+	const response = await retryAssistantCall(produce, retry, signal, callbacks);
+
+	if (response.stopReason === "aborted") {
+		const error = new Error("Compaction cancelled");
+		error.name = "AbortError";
+		throw error;
+	}
+	if (response.stopReason === "error") {
+		throw new Error(`Summarization failed: ${response.errorMessage || "Unknown error"}`);
+	}
+	if (response.content.some((block) => block.type === "toolCall")) {
+		throw new Error("Append compaction attempted to call a tool");
+	}
+	const text = contentText(response.content);
+	if (!text.trim()) {
+		throw new Error("Append compaction returned an empty summary");
+	}
+	return { text, usage: response.usage };
 }
 
 /**

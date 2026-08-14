@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type CompactionPreparation,
@@ -153,7 +154,7 @@ describe("generateSummary reasoning options", () => {
 			settings: { enabled: true, reserveTokens: 500000, keepRecentTokens: 20000 },
 		};
 
-		const result = await compact(preparation, createModel(false, 128000), "test-key");
+		const result = await compact(preparation, createModel(false, 128000), "test-key", null);
 
 		expect(result.usage).toEqual({
 			...mockSummaryResponse.usage,
@@ -164,4 +165,57 @@ describe("generateSummary reasoning options", () => {
 		});
 		expect(completeSimpleMock.mock.calls.map((call) => call[2]?.maxTokens)).toEqual([128000, 128000]);
 	});
+
+	it("summarizes a split turn with one append request", async () => {
+		const prefixMessages: Context["messages"] = [
+			{ role: "user", content: "old request", timestamp: Date.now() },
+			createAssistantMessageForPrefix("old response"),
+		];
+		const preparation: CompactionPreparation = {
+			firstKeptEntryId: "entry-keep",
+			messagesToSummarize: [prefixMessages[0]],
+			turnPrefixMessages: [prefixMessages[1]],
+			isSplitTurn: true,
+			tokensBefore: 1000,
+			fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+			settings: { enabled: true, reserveTokens: 2000, keepRecentTokens: 100 },
+		};
+		const tools = [{ name: "read", description: "Read a file", parameters: Type.Object({}) }];
+
+		const result = await compact(
+			preparation,
+			createModel(false),
+			"test-key",
+			{
+				systemPrompt: "normal coding system prompt",
+				tools,
+				sessionId: "existing-session",
+				contextPrefixMessages: prefixMessages,
+			},
+			undefined,
+			"focus on decisions",
+		);
+
+		expect(result.summary).toContain("## Goal");
+		expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+		const [, context, options] = completeSimpleMock.mock.calls[0];
+		expect(context.systemPrompt).toBe("normal coding system prompt");
+		expect(context.tools).toBe(tools);
+		expect(context.messages.slice(0, -1)).toEqual(prefixMessages);
+		const summaryRequest = JSON.stringify(context.messages.at(-1));
+		expect(context.messages.at(-1)?.role).toBe("user");
+		expect(summaryRequest).toContain("Do not continue the task");
+		expect(summaryRequest).toContain("middle of the latest turn");
+		expect(summaryRequest).toContain("Additional focus: focus on decisions");
+		expect(options).toMatchObject({ sessionId: "existing-session", apiKey: "test-key" });
+		expect(options).not.toHaveProperty("cacheRetention");
+	});
 });
+
+function createAssistantMessageForPrefix(text: string): AssistantMessage {
+	return {
+		...mockSummaryResponse,
+		content: [{ type: "text", text }],
+		timestamp: Date.now(),
+	};
+}

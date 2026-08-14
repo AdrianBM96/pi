@@ -5,6 +5,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+	buildAppendCompactionContextPrefix,
 	type CompactionSettings,
 	calculateContextTokens,
 	compact,
@@ -502,6 +503,16 @@ describe("prepareCompaction with previous compaction", () => {
 		expect(summarizedText).toContain("user msg 3 - kept by compaction1");
 		expect(summarizedText).not.toContain("First summary");
 		expect(preparation!.previousSummary).toBe("First summary");
+
+		const contextPrefixMessages = buildAppendCompactionContextPrefix(
+			[u1, a1, u2, a2, u3, a3, compaction1, u4, a4],
+			preparation!.firstKeptEntryId,
+		);
+		const contextPrefixText = extractText(contextPrefixMessages);
+		expect(contextPrefixMessages[0]?.role).toBe("compactionSummary");
+		expect(contextPrefixText).toContain("First summary");
+		expect(contextPrefixText).toContain("user msg 2 - kept by compaction1");
+		expect(contextPrefixText).toContain("user msg 3 - kept by compaction1");
 	});
 });
 
@@ -549,7 +560,7 @@ describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("LLM summarization", () => {
 		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
 		expect(preparation).toBeDefined();
 
-		const compactionResult = await compact(preparation!, model, process.env.ANTHROPIC_OAUTH_TOKEN!);
+		const compactionResult = await compact(preparation!, model, process.env.ANTHROPIC_OAUTH_TOKEN!, null);
 
 		expect(compactionResult.summary.length).toBeGreaterThan(100);
 		expect(compactionResult.firstKeptEntryId).toBeTruthy();
@@ -570,7 +581,7 @@ describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("LLM summarization", () => {
 		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
 		expect(preparation).toBeDefined();
 
-		const compactionResult = await compact(preparation!, model, process.env.ANTHROPIC_OAUTH_TOKEN!);
+		const compactionResult = await compact(preparation!, model, process.env.ANTHROPIC_OAUTH_TOKEN!, null);
 
 		// Simulate appending compaction to entries by creating a proper entry
 		const lastEntry = entries[entries.length - 1];

@@ -54,6 +54,8 @@ import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
+	type AppendCompactionRequest,
+	buildAppendCompactionContextPrefix,
 	type CompactionResult,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
@@ -65,6 +67,7 @@ import {
 	shouldCompact,
 } from "./compaction/index.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+import { areExperimentalFeaturesEnabled } from "./experimental.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
@@ -1783,6 +1786,30 @@ export class AgentSession {
 	// =========================================================================
 
 	/**
+	 * Build an experimental append-compaction request that reuses the active prompt, tools,
+	 * routing session, and context transforms so the provider can reuse the cached request prefix.
+	 */
+	private async _createCompactionRequest(
+		signal: AbortSignal,
+		pathEntries: SessionEntry[],
+		firstKeptEntryId: string,
+	): Promise<AppendCompactionRequest | null> {
+		if (!areExperimentalFeaturesEnabled()) {
+			return null;
+		}
+		const contextPrefixMessages = buildAppendCompactionContextPrefix(pathEntries, firstKeptEntryId);
+		const transformedMessages = this.agent.transformContext
+			? await this.agent.transformContext(contextPrefixMessages, signal)
+			: contextPrefixMessages;
+		return {
+			systemPrompt: this.agent.state.systemPrompt,
+			tools: this.agent.state.tools,
+			sessionId: this.agent.sessionId,
+			contextPrefixMessages: await this.agent.convertToLlm(transformedMessages),
+		};
+	}
+
+	/**
 	 * Manually compact the session context.
 	 * Aborts current agent operation first.
 	 * @param customInstructions Optional instructions for the compaction summary
@@ -1855,6 +1882,11 @@ export class AgentSession {
 					preparation,
 					requestModel,
 					apiKey,
+					await this._createCompactionRequest(
+						this._compactionAbortController.signal,
+						pathEntries,
+						preparation.firstKeptEntryId,
+					),
 					headers,
 					customInstructions,
 					this._compactionAbortController.signal,
@@ -2127,6 +2159,11 @@ export class AgentSession {
 					preparation,
 					requestModel,
 					apiKey,
+					await this._createCompactionRequest(
+						this._autoCompactionAbortController.signal,
+						pathEntries,
+						preparation.firstKeptEntryId,
+					),
 					headers,
 					undefined,
 					this._autoCompactionAbortController.signal,
