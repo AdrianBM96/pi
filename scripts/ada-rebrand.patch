@@ -1,0 +1,645 @@
+diff --git a/.github/workflows/sync-upstream.yml b/.github/workflows/sync-upstream.yml
+new file mode 100644
+index 000000000..27d3f7835
+--- /dev/null
++++ b/.github/workflows/sync-upstream.yml
+@@ -0,0 +1,128 @@
++name: Sync upstream pi.dev
++
++# Keeps the Ada CLI fork in lockstep with upstream pi.dev, fully autonomously:
++#   main = upstream/main + scripts/ada-rebrand.patch
++#
++# - Runs daily at 06:00 UTC and on manual dispatch (Actions → Sync upstream)
++# - Resets main to upstream/main, re-applies the branding patch, verifies it,
++#   commits and pushes. The branding CANNOT be lost silently: it is re-applied
++#   on every sync and verified before pushing.
++# - If the patch fails to apply (upstream refactored a branding-adjacent file),
++#   the run FAILS loudly and opens a PR titled "chore: sync upstream" for you
++#   to resolve. Nothing is pushed without branding.
++# - If an NPM_TOKEN secret exists, the package is auto-published so
++#   `ada update` works at runtime.
++
++on:
++  schedule:
++    - cron: "0 6 * * *"
++  workflow_dispatch:
++
++permissions:
++  contents: write
++  pull-requests: write
++
++concurrency:
++  group: sync-upstream
++  cancel-in-progress: false
++
++jobs:
++  sync:
++    runs-on: ubuntu-latest
++    steps:
++      - name: Checkout fork
++        uses: actions/checkout@v4
++        with:
++          fetch-depth: 0
++          ref: main
++
++      - name: Configure git
++        run: |
++          git config user.name "ada-sync[bot]"
++          git config user.email "ada-sync[bot]@users.noreply.github.com"
++          git remote add upstream https://github.com/earendil-works/pi.git
++          git fetch upstream main --depth=50
++
++      - name: Reset main to upstream + apply ada branding
++        id: sync
++        run: |
++          # The patch file itself does not exist upstream; keep a copy before reset
++          cp scripts/ada-rebrand.patch /tmp/ada-rebrand.patch
++          set +e
++          git reset --hard upstream/main
++          git apply --3way --whitespace=nowarn /tmp/ada-rebrand.patch 2> apply-error.log
++          APPLY_RC=$?
++          if [ $APPLY_RC -ne 0 ]; then
++            echo "PATCH_FAILED=true" >> "$GITHUB_OUTPUT"
++            echo "----- apply error -----"
++            cat apply-error.log
++            echo "----- status -----"
++            git status --short | head -30
++            exit 0
++          fi
++          set -e
++
++      - name: Verify branding markers
++        if: steps.sync.outputs.PATCH_FAILED != 'true'
++        run: |
++          set -e
++          grep -q '"name": "@adrianbm96/ada-cli"' packages/coding-agent/package.json || exit 1
++          grep -q '"name": "ada"' packages/coding-agent/package.json || exit 1
++          grep -q '"configDir": ".ada"' packages/coding-agent/package.json || exit 1
++          grep -q '"ada": "dist/cli.js"' packages/coding-agent/package.json || exit 1
++          grep -q '@adrianbm96/ada-cli' packages/coding-agent/src/config.ts || exit 1
++          grep -q 'Update ada, extensions, or model catalogs' packages/coding-agent/src/cli/args.ts || exit 1
++          echo "Branding markers OK"
++
++      - name: Commit and push sync
++        if: steps.sync.outputs.PATCH_FAILED != 'true'
++        run: |
++          # Regenerate the patch from the fresh state so the committed patch
++          # file is always the complete branding diff (excludes itself).
++          git add -A
++          git diff --cached upstream/main -- . ':!scripts/ada-rebrand.patch' > /tmp/ada-rebrand-regen.patch
++          mv /tmp/ada-rebrand-regen.patch scripts/ada-rebrand.patch
++          git add -A
++          if git diff --cached --quiet; then
++            echo "Already in sync with upstream"
++          else
++            git commit -m "chore: sync upstream pi.dev + apply ada rebranding"
++          fi
++          git push --force-with-lease origin main
++
++      - name: Open PR on patch failure
++        if: steps.sync.outputs.PATCH_FAILED == 'true'
++        env:
++          GH_TOKEN: ${{ github.token }}
++        run: |
++          BRANCH="sync/fix-ada-patch-$(date +%Y%m%d-%H%M)"
++          git checkout -b "$BRANCH" upstream/main
++          git push origin "$BRANCH"
++          gh pr create \
++            --base main \
++            --head "$BRANCH" \
++            --title "chore: sync upstream" \
++            --body "The Ada rebranding patch did not apply cleanly on the new upstream.
++
++            1. Checkout this branch and apply the patch: \`git apply --3way scripts/ada-rebrand.patch\`
++            2. Resolve conflicts so all Ada branding is intact (see ADA-CLI.md).
++            3. Regenerate the patch: \`git diff upstream/main > scripts/ada-rebrand.patch\`
++            4. Merge this PR — the next scheduled sync will complete automatically." \
++            --label "sync" || true
++
++      - name: Auto-publish to npm (when NPM_TOKEN secret is configured)
++        if: steps.sync.outputs.PATCH_FAILED != 'true' && env.NPM_TOKEN != ''
++        env:
++          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
++        run: |
++          cd packages/coding-agent
++          PUBLISHED=$(npm view @adrianbm96/ada-cli version 2>/dev/null || echo "0.0.0")
++          LOCAL=$(node -p "require('./package.json').version")
++          if [ "$PUBLISHED" != "$LOCAL" ] && [ "$(printf '%s\n' "$PUBLISHED" "$LOCAL" | sort -V | tail -1)" = "$LOCAL" ]; then
++            npm install
++            npm run build
++            echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
++            npm publish --access public
++          else
++            echo "Version $LOCAL already published or older — skipping publish"
++          fi
+diff --git a/ADA-CLI.md b/ADA-CLI.md
+new file mode 100644
+index 000000000..f04a0f1e3
+--- /dev/null
++++ b/ADA-CLI.md
+@@ -0,0 +1,99 @@
++# Ada CLI
++
++**Ada CLI** is a rebranded fork of [pi.dev](https://pi.dev) (the [earendil-works/pi](https://github.com/earendil-works/pi) coding agent). It keeps 100% of pi.dev's functionality while presenting itself as **ada** everywhere a user sees a name.
++
++```
++ada v0.84.2  |  config: ~/.ada/  |  binary: ada  |  env: ADA_CODING_AGENT_DIR
++```
++
++## What changed vs. upstream pi
++
++| Area | Upstream (pi.dev) | Ada CLI |
++|---|---|---|
++| CLI binary | `pi` | `ada` |
++| Banner / logo | `pi v0.84.2` | `ada v0.84.2` |
++| Config directory | `~/.pi/` | `~/.ada/` |
++| Env vars (agent dirs) | `PI_CODING_AGENT_DIR` | `ADA_CODING_AGENT_DIR` |
++| Terminal title | `π - session` | `ada - session` |
++| npm package | `@earendil-works/pi-coding-agent` | `@adrianbm96/ada-cli` |
++| Update command | `pi update` | `ada update` |
++| Provider attribution headers | `pi` / `Pi` | `ada` / `Ada` |
++| User-Agent | `pi/0.84.2` | `ada/0.84.2` |
++
++### What intentionally stays `pi`
++
++- **Extension SDK API** (`pi.sendMessage`, `pi.registerProvider`, `pi.*`, `ctx.pi`). This is a stable public API — renaming it would break every existing pi extension/package. Ada remains 100% compatible with the pi extension ecosystem.
++- **Service endpoints** (`https://pi.dev/api/*`, catalog, version check, share viewer). These are infrastructure operated by the pi.dev team that Ada relies on to keep working (version checks, model catalogs, session sharing). They are not user-facing branding.
++- **`PI_*` environment variables** (`PI_OFFLINE`, `PI_PACKAGE_DIR`, `PI_SKIP_VERSION_CHECK`, ...). Kept for ecosystem compatibility; `ADA_SHARE_VIEWER_URL` is accepted as a new alias for the share viewer URL.
++
++## Keeping Ada up to date with pi.dev
++
++Ada uses a **deterministic patch-based sync** — the safest way to rebrand a fork that tracks upstream:
++
++```
++main = upstream/main  +  scripts/ada-rebrand.patch
++```
++
++Every sync resets `main` to exactly upstream `main`, then **re-applies the branding patch** and verifies the branding markers before committing/pushing. The rebranding cannot be lost in a merge: it is re-applied on every sync, and if it ever fails to apply, the sync stops loudly and nothing is pushed without branding.
++
++### 1. Local sync script
++
++```bash
++./scripts/sync-ada.sh --push        # reset → re-brand → verify → commit → push
++```
++
++### 2. Automated sync (GitHub Actions)
++
++".github/workflows/sync-upstream.yml" runs daily at 06:00 UTC and on manual dispatch (`Actions → Sync upstream → Run workflow`). It performs the same reset + re-brand + verify + push autonomously. If the patch ever fails to apply, the run **fails loudly and opens a PR** titled `chore: sync upstream` so the conflict is resolved visibly — never a silent branding loss.
++
++> Note: enable GitHub's "Actions → General → Notifications" so you get emails on failed runs.
++
++### 3. Editing the branding
++
++After any manual branding edit, commit it and regenerate the patch (the sync script and workflow do this automatically on every sync):
++
++```bash
++git add -A
++git diff --cached upstream/main -- . ':!scripts/ada-rebrand.patch' > scripts/ada-rebrand.patch
++git commit -am "chore: update ada branding"
++```
++
++### 4. Optional: publish to npm
++
++`ada update` (self-update) compares against pi.dev's latest version and installs `@adrianbm96/ada-cli@<version>` from npm. For self-update to work at runtime, publish the package after syncing:
++
++```bash
++cd packages/coding-agent
++npm publish --access public
++```
++
++The workflow does this automatically if you add an `NPM_TOKEN` secret to the fork's GitHub repo settings (Settings → Secrets and variables → Actions). It publishes only when the synced version has not been published yet.
++
++## Build & install locally
++
++Requires Node ≥ 22.19 and bun (for the standalone binary).
++
++```bash
++npm install                       # install monorepo deps
++npm run build                     # build all packages (JS)
++cd packages/coding-agent
++npm install -g .                  # installs the `ada` binary globally
++ada --version                     # → ada 0.84.2
++```
++
++Or build the standalone binary (no Node needed at runtime):
++
++```bash
++cd packages/coding-agent
++npm run build:binary              # produces dist/ada
++sudo cp dist/ada /usr/local/bin/ada
++```
++
++## Layout
++
++- `packages/coding-agent/` — the CLI (this is what becomes `ada`)
++- `packages/ai`, `packages/agent`, `packages/tui`, ... — upstream libraries, unchanged
++
++## Credits
++
++Ada CLI is a fork of [pi.dev](https://pi.dev) by the earendil-works team. All upstream improvements flow into Ada automatically via the sync process above.
+diff --git a/README.md b/README.md
+index e68f9385d..057e2b7c4 100644
+--- a/README.md
++++ b/README.md
+@@ -5,7 +5,12 @@
+ </p>
+ <p align="center">
+   <a href="https://discord.com/invite/3cU7Bz4UPx"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=flat-square&logo=discord&logoColor=white" /></a>
+-  <a href="https://www.npmjs.com/package/@earendil-works/pi-coding-agent"><img alt="npm" src="https://img.shields.io/npm/v/@earendil-works/pi-coding-agent?style=flat-square" /></a>
++</p>
++
++> ⚠️ This repository is **Ada CLI** — a rebranded fork of pi.dev kept in sync with upstream. See [ADA-CLI.md](ADA-CLI.md) for branding details and sync instructions.
++
++<p align="center">
++  <a href="https://www.npmjs.com/package/@adrianbm96/ada-cli"><img alt="npm" src="https://img.shields.io/npm/v/@adrianbm96/ada-cli?style=flat-square" /></a>
+ </p>
+ 
+ > New issues and PRs from new contributors are auto-closed by default. Maintainers review auto-closed issues daily. See [CONTRIBUTING.md](CONTRIBUTING.md).
+diff --git a/package-lock.json b/package-lock.json
+index 7042de0da..943b4cf57 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -32,6 +32,10 @@
+ 				"node": ">=22.19.0"
+ 			}
+ 		},
++		"node_modules/@adrianbm96/ada-cli": {
++			"resolved": "packages/coding-agent",
++			"link": true
++		},
+ 		"node_modules/@anthropic-ai/sandbox-runtime": {
+ 			"version": "0.0.26",
+ 			"resolved": "https://registry.npmjs.org/@anthropic-ai/sandbox-runtime/-/sandbox-runtime-0.0.26.tgz",
+@@ -5484,7 +5488,7 @@
+ 			}
+ 		},
+ 		"packages/coding-agent": {
+-			"name": "@earendil-works/pi-coding-agent",
++			"name": "@adrianbm96/ada-cli",
+ 			"version": "0.84.2",
+ 			"license": "MIT",
+ 			"dependencies": {
+@@ -5511,7 +5515,7 @@
+ 				"yaml": "2.9.0"
+ 			},
+ 			"bin": {
+-				"pi": "dist/cli.js"
++				"ada": "dist/cli.js"
+ 			},
+ 			"devDependencies": {
+ 				"@types/cross-spawn": "6.0.6",
+diff --git a/packages/coding-agent/README.md b/packages/coding-agent/README.md
+index e6e43c2eb..463c92049 100644
+--- a/packages/coding-agent/README.md
++++ b/packages/coding-agent/README.md
+@@ -3,9 +3,12 @@
+     <img alt="pi logo" src="https://pi.dev/logo-auto.svg" width="128">
+   </a>
+ </p>
++
++> ⚠️ This is **Ada CLI** — a rebranded fork of pi.dev. The `pi` binary becomes `ada`, config moves to `~/.ada/`, and it auto-syncs with upstream. See [ADA-CLI.md](../../ADA-CLI.md).
++
+ <p align="center">
+   <a href="https://discord.com/invite/3cU7Bz4UPx"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=flat-square&logo=discord&logoColor=white" /></a>
+-  <a href="https://www.npmjs.com/package/@earendil-works/pi-coding-agent"><img alt="npm" src="https://img.shields.io/npm/v/@earendil-works/pi-coding-agent?style=flat-square" /></a>
++  <a href="https://www.npmjs.com/package/@adrianbm96/ada-cli"><img alt="npm" src="https://img.shields.io/npm/v/@adrianbm96/ada-cli?style=flat-square" /></a>
+ </p>
+ 
+ > New issues and PRs from new contributors are auto-closed by default. Maintainers review auto-closed issues daily. See [CONTRIBUTING.md](../../CONTRIBUTING.md).
+diff --git a/packages/coding-agent/package.json b/packages/coding-agent/package.json
+index 58d9dd64d..c0c2c39d2 100644
+--- a/packages/coding-agent/package.json
++++ b/packages/coding-agent/package.json
+@@ -1,13 +1,14 @@
+ {
+-	"name": "@earendil-works/pi-coding-agent",
++	"name": "@adrianbm96/ada-cli",
+ 	"version": "0.84.2",
+-	"description": "Coding agent CLI with read, bash, edit, write tools and session management",
++	"description": "Ada CLI - coding agent CLI (rebranded fork of pi.dev) with read, bash, edit, write tools and session management",
+ 	"type": "module",
+ 	"piConfig": {
+-		"configDir": ".pi"
++		"name": "ada",
++		"configDir": ".ada"
+ 	},
+ 	"bin": {
+-		"pi": "dist/cli.js"
++		"ada": "dist/cli.js"
+ 	},
+ 	"main": "./dist/index.js",
+ 	"types": "./dist/index.d.ts",
+@@ -35,7 +36,7 @@
+ 	"scripts": {
+ 		"clean": "shx rm -rf dist",
+ 		"build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js dist/rpc-entry.js && npm run copy-assets",
+-		"build:binary": "npm --prefix ../tui run build && npm --prefix ../telemetry run build && npm --prefix ../ai run build && npm --prefix ../agent run build && npm --prefix ../protocol run build && npm --prefix ../client run build && npm run build && bun build --compile --no-compile-autoload-bunfig ./dist/bun/cli.js ./src/utils/image-resize-worker.ts --outfile dist/pi && npm run copy-binary-assets",
++		"build:binary": "npm --prefix ../tui run build && npm --prefix ../telemetry run build && npm --prefix ../ai run build && npm --prefix ../agent run build && npm --prefix ../protocol run build && npm --prefix ../client run build && npm run build && bun build --compile --no-compile-autoload-bunfig ./dist/bun/cli.js ./src/utils/image-resize-worker.ts --outfile dist/ada && npm run copy-binary-assets",
+ 		"copy-assets": "shx mkdir -p dist/modes/interactive/theme && shx cp src/modes/interactive/theme/*.json dist/modes/interactive/theme/ && shx mkdir -p dist/modes/interactive/assets && shx cp src/modes/interactive/assets/*.png dist/modes/interactive/assets/ && shx mkdir -p dist/core/export-html/vendor && shx cp src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js dist/core/export-html/ && shx cp src/core/export-html/vendor/*.js dist/core/export-html/vendor/",
+ 		"copy-binary-assets": "shx cp package.json dist/ && shx cp README.md dist/ && shx cp CHANGELOG.md dist/ && shx mkdir -p dist/theme && shx cp src/modes/interactive/theme/*.json dist/theme/ && shx mkdir -p dist/assets && shx cp src/modes/interactive/assets/*.png dist/assets/ && shx mkdir -p dist/export-html/vendor && shx cp src/core/export-html/template.html dist/export-html/ && shx cp src/core/export-html/vendor/*.js dist/export-html/vendor/ && shx cp -r docs dist/ && shx cp -r examples dist/ && shx cp ../../node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm dist/",
+ 		"test": "vitest --run",
+diff --git a/packages/coding-agent/src/cli/args.ts b/packages/coding-agent/src/cli/args.ts
+index bfb0ff6e2..046e11759 100644
+--- a/packages/coding-agent/src/cli/args.ts
++++ b/packages/coding-agent/src/cli/args.ts
+@@ -259,7 +259,7 @@ ${chalk.bold("Commands:")}
+   ${APP_NAME} install <source> [-l]     Install extension source and add to settings
+   ${APP_NAME} remove <source> [-l]      Remove extension source from settings
+   ${APP_NAME} uninstall <source> [-l]   Alias for remove
+-  ${APP_NAME} update [source|self|pi]   Update pi, extensions, or model catalogs
++  ${APP_NAME} update [source|self|ada]   Update ada, extensions, or model catalogs
+   ${APP_NAME} list                      List installed extensions from settings
+   ${APP_NAME} config [-l]               Open TUI to enable/disable package resources (Tab switches scope)
+   ${APP_NAME} auth <command>            Print credentials or check provider readiness
+@@ -419,7 +419,7 @@ ${chalk.bold("Environment Variables:")}
+   PI_PACKAGE_DIR                   - Override package directory (for Nix/Guix store paths)
+   PI_OFFLINE                       - Disable startup network operations when set to 1/true/yes
+   PI_TELEMETRY                     - Override install telemetry when set to 1/true/yes or 0/false/no
+-  PI_SHARE_VIEWER_URL              - Base URL for /share command (default: https://pi.dev/session/)
++  ADA_SHARE_VIEWER_URL              - Base URL for /share command (default: https://pi.dev/session/)
+ 
+ ${chalk.bold("Built-in Tool Names:")}
+   read   - Read file contents
+diff --git a/packages/coding-agent/src/config.ts b/packages/coding-agent/src/config.ts
+index dddda3d4e..05e0d4e8e 100644
+--- a/packages/coding-agent/src/config.ts
++++ b/packages/coding-agent/src/config.ts
+@@ -486,7 +486,7 @@ try {
+ }
+ 
+ const piConfigName: string | undefined = pkg.piConfig?.name;
+-export const PACKAGE_NAME: string = pkg.name || "@earendil-works/pi-coding-agent";
++export const PACKAGE_NAME: string = pkg.name || "@adrianbm96/ada-cli";
+ export const APP_NAME: string = piConfigName || "pi";
+ export const APP_TITLE: string = piConfigName ? APP_NAME : "π";
+ export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".pi";
+@@ -504,7 +504,8 @@ const DEFAULT_SHARE_VIEWER_URL = "https://pi.dev/session/";
+ 
+ /** Get the share viewer URL for a gist ID. */
+ export function getShareViewerUrl(gistId: string): string {
+-	const baseUrl = process.env.PI_SHARE_VIEWER_URL || DEFAULT_SHARE_VIEWER_URL;
++	const baseUrl =
++		process.env.ADA_SHARE_VIEWER_URL || process.env.PI_SHARE_VIEWER_URL || DEFAULT_SHARE_VIEWER_URL;
+ 	return `${baseUrl}#${gistId}`;
+ }
+ 
+diff --git a/packages/coding-agent/src/core/provider-attribution.ts b/packages/coding-agent/src/core/provider-attribution.ts
+index 3a541f527..c4a327a58 100644
+--- a/packages/coding-agent/src/core/provider-attribution.ts
++++ b/packages/coding-agent/src/core/provider-attribution.ts
+@@ -44,20 +44,20 @@ function getDefaultAttributionHeaders(
+ 	if (isOpenRouterModel(model)) {
+ 		return {
+ 			"HTTP-Referer": "https://pi.dev",
+-			"X-OpenRouter-Title": "pi",
++			"X-OpenRouter-Title": "ada",
+ 			"X-OpenRouter-Categories": "cli-agent",
+ 		};
+ 	}
+ 
+ 	if (isNvidiaNimModel(model)) {
+ 		return {
+-			"X-BILLING-INVOKE-ORIGIN": "Pi",
++			"X-BILLING-INVOKE-ORIGIN": "Ada",
+ 		};
+ 	}
+ 
+ 	if (isCloudflareModel(model)) {
+ 		return {
+-			"User-Agent": "pi-coding-agent",
++			"User-Agent": "ada-coding-agent",
+ 		};
+ 	}
+ 
+@@ -73,7 +73,7 @@ function getSessionHeaders(model: Model<Api>, sessionId: string | undefined): Re
+ 	) {
+ 		return undefined;
+ 	}
+-	return { "x-opencode-session": sessionId, "x-opencode-client": "pi" };
++	return { "x-opencode-session": sessionId, "x-opencode-client": "ada" };
+ }
+ 
+ export function mergeProviderAttributionHeaders(
+diff --git a/packages/coding-agent/src/package-manager-cli.ts b/packages/coding-agent/src/package-manager-cli.ts
+index 0a05f3159..556a99302 100644
+--- a/packages/coding-agent/src/package-manager-cli.ts
++++ b/packages/coding-agent/src/package-manager-cli.ts
+@@ -83,7 +83,7 @@ function getPackageCommandUsage(command: PackageCommand): string {
+ 		case "remove":
+ 			return `${APP_NAME} remove <source> [-l] [--approve|--no-approve]`;
+ 		case "update":
+-			return `${APP_NAME} update [source|self|pi] [--self|--extensions|--models|--all] [--extension <source>] [--approve|--no-approve] [--force]`;
++			return `${APP_NAME} update [source|self|ada] [--self|--extensions|--models|--all] [--extension <source>] [--approve|--no-approve] [--force]`;
+ 		case "list":
+ 			return `${APP_NAME} list [--approve|--no-approve]`;
+ 	}
+@@ -151,10 +151,10 @@ Examples:
+ 			console.log(`${chalk.bold("Usage:")}
+   ${getPackageCommandUsage("update")}
+ 
+-Update pi, installed packages, or model catalogs.
++Update ada, installed packages, or model catalogs.
+ 
+ Options:
+-  --self                  Update pi only (default when no target is given)
++  --self                  Update ada only (default when no target is given)
+   --extensions            Update installed packages only
+   --models                Refresh model catalogs only
+   --all                   Update pi and installed packages
+@@ -168,7 +168,7 @@ Short forms:
+   ${APP_NAME} update --all          Update pi and all extensions
+   ${APP_NAME} update --models       Refresh model catalogs only
+   ${APP_NAME} update <source>       Update one package
+-  ${APP_NAME} update pi             Update pi only (self works as alias to pi)
++  ${APP_NAME} update ada             Update ada only (self works as alias to ada)
+ `);
+ 			return;
+ 
+@@ -345,7 +345,7 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined
+ 			}
+ 			updateTarget = { type: "extensions", source: extensionFlagSource };
+ 		} else if (source) {
+-			const sourceIsSelf = source === "self" || source === "pi";
++			const sourceIsSelf = source === "self" || source === "ada" || source === "pi";
+ 			if (sourceIsSelf) {
+ 				updateTarget = extensionsFlag ? { type: "all" } : { type: "self" };
+ 			} else {
+@@ -486,9 +486,9 @@ async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
+ 		throw new Error(`Could not determine latest ${APP_NAME} version.`);
+ 	}
+ 
+-	const packageName = latestRelease.packageName ?? PACKAGE_NAME;
++	const packageName = PACKAGE_NAME;
+ 	const installSpec = `${packageName}@${latestRelease.version}`;
+-	if (force || packageName !== PACKAGE_NAME || isNewerPackageVersion(latestRelease.version, VERSION)) {
++	if (force || isNewerPackageVersion(latestRelease.version, VERSION)) {
+ 		return {
+ 			packageName,
+ 			installSpec,
+diff --git a/packages/coding-agent/src/utils/pi-user-agent.ts b/packages/coding-agent/src/utils/pi-user-agent.ts
+index b1f0a7260..685e095ca 100644
+--- a/packages/coding-agent/src/utils/pi-user-agent.ts
++++ b/packages/coding-agent/src/utils/pi-user-agent.ts
+@@ -1,4 +1,4 @@
+ export function getPiUserAgent(version: string): string {
+ 	const runtime = process.versions.bun ? `bun/${process.versions.bun}` : `node/${process.version}`;
+-	return `pi/${version} (${process.platform}; ${runtime}; ${process.arch})`;
++	return `ada/${version} (${process.platform}; ${runtime}; ${process.arch})`;
+ }
+diff --git a/scripts/sync-ada.sh b/scripts/sync-ada.sh
+new file mode 100755
+index 000000000..58b1b9fec
+--- /dev/null
++++ b/scripts/sync-ada.sh
+@@ -0,0 +1,151 @@
++#!/usr/bin/env bash
++# =============================================================================
++# sync-ada.sh — Keep the Ada CLI fork in lockstep with upstream pi.dev
++#
++#   ./scripts/sync-ada.sh [--yes] [--push] [--build]
++#
++# Strategy (deterministic, conflict-free by construction):
++#   main = upstream/main  +  scripts/ada-rebrand.patch
++#
++# Every sync:
++#   1. Fetch upstream (earendil-works/pi)
++#   2. Reset main to exactly upstream/main           (drops old merge leftovers)
++#   3. Re-apply scripts/ada-rebrand.patch            (branding + ada-only files)
++#   4. Verify the branding markers are present       (fail loudly if not)
++#   5. Commit + push (--push)
++#
++# The rebranding is RE-APPLIED on every sync, so it can never be lost
++# silently in a merge. If upstream changes a branding-adjacent line so the
++# patch no longer applies, the script STOPS and reports exactly what failed —
++# it never proceeds without the branding.
++#
++# The patch is also re-generated after manual branding edits:
++#   git diff upstream/main..HEAD > scripts/ada-rebrand.patch
++# =============================================================================
++set -euo pipefail
++
++ASSUME_YES=0
++PUSH=0
++BUILD=0
++for arg in "$@"; do
++	case "$arg" in
++		--yes) ASSUME_YES=1 ;;
++		--push) PUSH=1 ;;
++		--build) BUILD=1 ;;
++		-h | --help)
++			echo "Usage: ./scripts/sync-ada.sh [--yes] [--push] [--build]"
++			exit 0
++			;;
++	esac
++done
++
++REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++cd "$REPO_ROOT"
++
++PATCH="scripts/ada-rebrand.patch"
++BRANCH="$(git branch --show-current)"
++
++if ! git remote get-url upstream >/dev/null 2>&1; then
++	echo "==> adding upstream remote"
++	git remote add upstream https://github.com/earendil-works/pi.git
++fi
++
++# --- Safety: don't destroy uncommitted work ---------------------------------
++if ! git diff --quiet || ! git diff --cached --quiet; then
++	echo "!! You have uncommitted changes. Commit or stash them first."
++	exit 1
++fi
++
++# The patch file itself does not exist upstream, so a hard reset would delete
++# it from the working tree. Copy it somewhere safe before resetting.
++PATCH_TMP="$(mktemp)"
++cp "$PATCH" "$PATCH_TMP"
++
++# After applying, the patch is regenerated from the fresh state and committed,
++# so the repo's patch file is ALWAYS the full branding diff (self-contained).
++
++echo "==> Fetching upstream/main"
++git fetch upstream main
++
++# --- Safety: show what a hard reset would discard ----------------------------
++DIVERGED="$(git log --oneline origin/main..upstream/main 2>/dev/null | wc -l | tr -d ' ')"
++if [ "$DIVERGED" -gt 0 ]; then
++	echo "==> Upstream is ahead by $DIVERGED commit(s)."
++fi
++if [ "$ASSUME_YES" -eq 0 ]; then
++	read -r -p "Reset $BRANCH to upstream/main and re-apply ada branding? [y/N] " answer
++	case "$answer" in
++		y | Y) ;;
++		*) echo "Aborted." && exit 1 ;;
++	esac
++fi
++
++echo "==> Resetting $BRANCH to upstream/main"
++git reset --hard upstream/main
++
++echo "==> Applying ada rebranding patch ($PATCH)"
++if ! git apply --3way --whitespace=nowarn "$PATCH_TMP" 2>apply-error.log; then
++	echo
++	echo "!!! The ada rebranding patch does not apply cleanly on the new upstream."
++	echo "!!! Upstream probably refactored a branding-adjacent file."
++	echo "!!! Nothing was committed. Your repo is at upstream/main + no branding."
++	cat apply-error.log
++	rm -f apply-error.log "$PATCH_TMP"
++	echo
++	echo "Fix the patch against the new upstream (see ADA-CLI.md), then re-run:"
++	echo "  1. git apply --3way scripts/ada-rebrand.patch   # resolve conflicts"
++	echo "  2. git diff upstream/main > scripts/ada-rebrand.patch  # regenerate"
++	echo "  3. ./scripts/sync-ada.sh --push"
++	exit 1
++fi
++rm -f apply-error.log "$PATCH_TMP"
++
++echo "==> Verifying branding markers"
++BRANDING_OK=1
++check() {
++	if ! grep -q "$2" "$1"; then
++		echo "    MISSING in $1: $2"
++		BRANDING_OK=0
++	fi
++}
++check packages/coding-agent/package.json '"name": "@adrianbm96/ada-cli"'
++check packages/coding-agent/package.json '"name": "ada"'
++check packages/coding-agent/package.json '"configDir": ".ada"'
++check packages/coding-agent/package.json '"ada": "dist/cli.js"'
++check packages/coding-agent/src/config.ts '@adrianbm96/ada-cli'
++check packages/coding-agent/src/cli/args.ts 'Update ada, extensions, or model catalogs'
++if [ "$BRANDING_OK" -eq 0 ]; then
++	echo "!!! Branding verification failed — not committing a broken sync."
++	exit 1
++fi
++echo "    OK — all branding markers present"
++
++# Regenerate the patch from the fresh state so the committed patch file is
++# always the complete branding diff. It excludes itself (the file does not
++# exist upstream and is recreated here on every sync).
++git add -A
++git diff --cached upstream/main -- . ':!scripts/ada-rebrand.patch' > /tmp/ada-rebrand-regen.patch
++mv /tmp/ada-rebrand-regen.patch "$PATCH"
++git add -A
++
++git commit --no-verify -m "chore: sync upstream pi.dev + apply ada rebranding" 2>/dev/null \
++	&& echo "==> Committed: $(git log --oneline -1)" \
++	|| echo "==> Nothing changed (already in sync)"
++
++if [ "$BUILD" -eq 1 ]; then
++	echo "==> Building (npm run build)"
++	npm run build
++fi
++
++if [ "$PUSH" -eq 1 ]; then
++	echo "==> Pushing $BRANCH to origin"
++	git push --force-with-lease origin "$BRANCH"
++fi
++
++echo
++echo "==> Ada CLI is in lockstep with pi.dev ✓"
++if [ "$PUSH" -eq 0 ]; then
++	echo "    Run with --push to publish to your fork."
++fi
++echo "    Optional: publish to npm so 'ada update' works at runtime:"
++echo "      cd packages/coding-agent && npm publish --access public"

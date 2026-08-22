@@ -1,0 +1,128 @@
+name: Sync upstream pi.dev
+
+# Keeps the Ada CLI fork in lockstep with upstream pi.dev, fully autonomously:
+#   main = upstream/main + scripts/ada-rebrand.patch
+#
+# - Runs daily at 06:00 UTC and on manual dispatch (Actions → Sync upstream)
+# - Resets main to upstream/main, re-applies the branding patch, verifies it,
+#   commits and pushes. The branding CANNOT be lost silently: it is re-applied
+#   on every sync and verified before pushing.
+# - If the patch fails to apply (upstream refactored a branding-adjacent file),
+#   the run FAILS loudly and opens a PR titled "chore: sync upstream" for you
+#   to resolve. Nothing is pushed without branding.
+# - If an NPM_TOKEN secret exists, the package is auto-published so
+#   `ada update` works at runtime.
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Configure git
+        run: |
+          git config user.name "ada-sync[bot]"
+          git config user.email "ada-sync[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/earendil-works/pi.git
+          git fetch upstream main --depth=50
+
+      - name: Reset main to upstream + apply ada branding
+        id: sync
+        run: |
+          # The patch file itself does not exist upstream; keep a copy before reset
+          cp scripts/ada-rebrand.patch /tmp/ada-rebrand.patch
+          set +e
+          git reset --hard upstream/main
+          git apply --3way --whitespace=nowarn /tmp/ada-rebrand.patch 2> apply-error.log
+          APPLY_RC=$?
+          if [ $APPLY_RC -ne 0 ]; then
+            echo "PATCH_FAILED=true" >> "$GITHUB_OUTPUT"
+            echo "----- apply error -----"
+            cat apply-error.log
+            echo "----- status -----"
+            git status --short | head -30
+            exit 0
+          fi
+          set -e
+
+      - name: Verify branding markers
+        if: steps.sync.outputs.PATCH_FAILED != 'true'
+        run: |
+          set -e
+          grep -q '"name": "@adrianbm96/ada-cli"' packages/coding-agent/package.json || exit 1
+          grep -q '"name": "ada"' packages/coding-agent/package.json || exit 1
+          grep -q '"configDir": ".ada"' packages/coding-agent/package.json || exit 1
+          grep -q '"ada": "dist/cli.js"' packages/coding-agent/package.json || exit 1
+          grep -q '@adrianbm96/ada-cli' packages/coding-agent/src/config.ts || exit 1
+          grep -q 'Update ada, extensions, or model catalogs' packages/coding-agent/src/cli/args.ts || exit 1
+          echo "Branding markers OK"
+
+      - name: Commit and push sync
+        if: steps.sync.outputs.PATCH_FAILED != 'true'
+        run: |
+          # Regenerate the patch from the fresh state so the committed patch
+          # file is always the complete branding diff (excludes itself).
+          git add -A
+          git diff --cached upstream/main -- . ':!scripts/ada-rebrand.patch' > /tmp/ada-rebrand-regen.patch
+          mv /tmp/ada-rebrand-regen.patch scripts/ada-rebrand.patch
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Already in sync with upstream"
+          else
+            git commit -m "chore: sync upstream pi.dev + apply ada rebranding"
+          fi
+          git push --force-with-lease origin main
+
+      - name: Open PR on patch failure
+        if: steps.sync.outputs.PATCH_FAILED == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BRANCH="sync/fix-ada-patch-$(date +%Y%m%d-%H%M)"
+          git checkout -b "$BRANCH" upstream/main
+          git push origin "$BRANCH"
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "chore: sync upstream" \
+            --body "The Ada rebranding patch did not apply cleanly on the new upstream.
+
+            1. Checkout this branch and apply the patch: \`git apply --3way scripts/ada-rebrand.patch\`
+            2. Resolve conflicts so all Ada branding is intact (see ADA-CLI.md).
+            3. Regenerate the patch: \`git diff upstream/main > scripts/ada-rebrand.patch\`
+            4. Merge this PR — the next scheduled sync will complete automatically." \
+            --label "sync" || true
+
+      - name: Auto-publish to npm (when NPM_TOKEN secret is configured)
+        if: steps.sync.outputs.PATCH_FAILED != 'true' && env.NPM_TOKEN != ''
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd packages/coding-agent
+          PUBLISHED=$(npm view @adrianbm96/ada-cli version 2>/dev/null || echo "0.0.0")
+          LOCAL=$(node -p "require('./package.json').version")
+          if [ "$PUBLISHED" != "$LOCAL" ] && [ "$(printf '%s\n' "$PUBLISHED" "$LOCAL" | sort -V | tail -1)" = "$LOCAL" ]; then
+            npm install
+            npm run build
+            echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+            npm publish --access public
+          else
+            echo "Version $LOCAL already published or older — skipping publish"
+          fi
